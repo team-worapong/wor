@@ -7,6 +7,7 @@ import (
 	"github.com/team-worapong/wor/internal/doctor"
 	"github.com/team-worapong/wor/internal/engine"
 	"github.com/team-worapong/wor/internal/output"
+	worRuntime "github.com/team-worapong/wor/internal/runtime"
 )
 
 func renderVersion(renderer *output.Renderer, report engine.VersionReport) {
@@ -75,37 +76,49 @@ func renderEnvironment(renderer *output.Renderer, report engine.EnvironmentRepor
 }
 
 func renderDoctor(renderer *output.Renderer, report doctor.Report) {
-	rows := make([][]string, 0, len(report.Results))
-	for _, result := range report.Results {
-		versionText := result.Version
-		if strings.TrimSpace(versionText) == "" {
-			versionText = "-"
-		}
+	renderer.Text("Read-only diagnostic. No packages will be installed and no system configuration will be changed.")
 
-		pathText := result.Path
-		if strings.TrimSpace(pathText) == "" {
-			pathText = "-"
+	for index, group := range report.Groups {
+		if index > 0 {
+			renderer.Text("")
 		}
-
-		statusText := string(result.Status)
-		if result.Message != "" {
-			statusText = statusText + ": " + result.Message
-		}
-
-		rows = append(rows, []string{
-			result.Name,
-			pathText,
-			versionText,
-			statusText,
-		})
+		renderer.Text("%s (%s)", group.Title, group.Requirement)
+		renderer.Table([]string{"Tool", "Required", "Path", "Version", "Status"}, doctorRows(group.Results))
 	}
 
-	renderer.Table([]string{"Runtime", "Path", "Version", "Status"}, rows)
-
 	if report.HasIssues {
-		renderer.Warning("doctor completed with issues")
+		renderer.Warning("doctor completed with required issues")
 		return
 	}
 
 	renderer.Success("doctor completed")
+}
+
+func doctorRows(results []worRuntime.CheckResult) [][]string {
+	rows := make([][]string, 0, len(results))
+	for _, result := range results {
+		rows = append(rows, []string{
+			result.Name,
+			string(result.Requirement),
+			valueOrDash(result.Path),
+			valueOrDash(result.Version),
+			doctorStatus(result),
+		})
+	}
+	return rows
+}
+
+func doctorStatus(result worRuntime.CheckResult) string {
+	status := string(result.Status)
+	if result.Message != "" {
+		status += ": " + result.Message
+	}
+	return status
+}
+
+func valueOrDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }

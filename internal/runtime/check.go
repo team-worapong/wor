@@ -20,8 +20,24 @@ type Status string
 
 const (
 	StatusOK      Status = "ok"
-	StatusMissing Status = "missing"
+	StatusIssue   Status = "issue"
 	StatusWarning Status = "warning"
+	StatusInfo    Status = "info"
+)
+
+type Requirement string
+
+const (
+	RequirementRequired Requirement = "required"
+	RequirementOptional Requirement = "optional"
+)
+
+type Category string
+
+const (
+	CategoryCoreTools          Category = "core_tools"
+	CategoryOptionalRuntimes   Category = "optional_runtimes"
+	CategoryOptionalWebServers Category = "optional_web_servers"
 )
 
 type VersionSource string
@@ -34,18 +50,23 @@ const (
 type Target struct {
 	Name          string
 	Command       string
+	Commands      []string
 	VersionArgs   []string
 	VersionSource VersionSource
 	PackageName   string
+	Requirement   Requirement
+	Category      Category
 }
 
 type CheckResult struct {
-	Name    string
-	Command string
-	Path    string
-	Version string
-	Status  Status
-	Message string
+	Name        string
+	Command     string
+	Path        string
+	Version     string
+	Status      Status
+	Requirement Requirement
+	Category    Category
+	Message     string
 }
 
 type Checker struct {
@@ -60,37 +81,81 @@ func NewChecker(platform Platform) Checker {
 	}
 }
 
-func Required() []Target {
+func DefaultTargets() []Target {
 	return []Target{
 		{
 			Name:          "Go",
 			Command:       "go",
 			VersionArgs:   []string{"version"},
 			VersionSource: VersionFromCommand,
+			Requirement:   RequirementRequired,
+			Category:      CategoryCoreTools,
 		},
 		{
 			Name:          "Git",
 			Command:       "git",
 			VersionArgs:   []string{"version"},
 			VersionSource: VersionFromCommand,
+			Requirement:   RequirementRequired,
+			Category:      CategoryCoreTools,
 		},
 		{
 			Name:          "Node.js",
 			Command:       "node",
 			VersionArgs:   []string{"--version"},
 			VersionSource: VersionFromCommand,
+			Requirement:   RequirementOptional,
+			Category:      CategoryOptionalRuntimes,
 		},
 		{
 			Name:          "npm",
 			Command:       "npm",
 			VersionArgs:   []string{"--version"},
 			VersionSource: VersionFromCommand,
+			Requirement:   RequirementOptional,
+			Category:      CategoryOptionalRuntimes,
 		},
 		{
 			Name:          "PM2",
 			Command:       "pm2",
 			VersionSource: VersionFromNPMGlobalPackage,
 			PackageName:   "pm2",
+			Requirement:   RequirementOptional,
+			Category:      CategoryOptionalRuntimes,
+		},
+		{
+			Name:          "PHP",
+			Command:       "php",
+			VersionArgs:   []string{"--version"},
+			VersionSource: VersionFromCommand,
+			Requirement:   RequirementOptional,
+			Category:      CategoryOptionalRuntimes,
+		},
+		{
+			Name:          "Python",
+			Command:       "python",
+			Commands:      []string{"python3", "python"},
+			VersionArgs:   []string{"--version"},
+			VersionSource: VersionFromCommand,
+			Requirement:   RequirementOptional,
+			Category:      CategoryOptionalRuntimes,
+		},
+		{
+			Name:          "Nginx",
+			Command:       "nginx",
+			VersionArgs:   []string{"-v"},
+			VersionSource: VersionFromCommand,
+			Requirement:   RequirementOptional,
+			Category:      CategoryOptionalWebServers,
+		},
+		{
+			Name:          "Apache",
+			Command:       "apache",
+			Commands:      []string{"apache2", "httpd"},
+			VersionArgs:   []string{"-v"},
+			VersionSource: VersionFromCommand,
+			Requirement:   RequirementOptional,
+			Category:      CategoryOptionalWebServers,
 		},
 	}
 }
@@ -104,40 +169,40 @@ func (c Checker) CheckAll(ctx context.Context, targets []Target) []CheckResult {
 }
 
 func (c Checker) Check(ctx context.Context, target Target) CheckResult {
-	path, err := c.platform.LookPath(target.Command)
-	if err != nil {
-		return CheckResult{
-			Name:    target.Name,
-			Command: target.Command,
-			Status:  StatusMissing,
-			Message: "not found in PATH",
-		}
+	target = normalizeTarget(target)
+	result := CheckResult{
+		Name:        target.Name,
+		Command:     target.Command,
+		Requirement: target.Requirement,
+		Category:    target.Category,
 	}
 
-	version, err := c.version(ctx, target)
+	command, path, err := c.lookPath(target)
 	if err != nil {
-		return CheckResult{
-			Name:    target.Name,
-			Command: target.Command,
-			Path:    path,
-			Status:  StatusWarning,
-			Message: err.Error(),
-		}
+		result.Status = missingStatus(target.Requirement)
+		result.Message = missingMessage(target.Requirement)
+		return result
 	}
 
-	return CheckResult{
-		Name:    target.Name,
-		Command: target.Command,
-		Path:    path,
-		Version: version,
-		Status:  StatusOK,
+	result.Command = command
+	result.Path = path
+
+	version, err := c.version(ctx, target, command)
+	if err != nil {
+		result.Status = StatusWarning
+		result.Message = err.Error()
+		return result
 	}
+
+	result.Version = version
+	result.Status = StatusOK
+	return result
 }
 
-func (c Checker) version(ctx context.Context, target Target) (string, error) {
+func (c Checker) version(ctx context.Context, target Target, command string) (string, error) {
 	switch target.VersionSource {
 	case VersionFromCommand:
-		return c.commandVersion(ctx, target.Command, target.VersionArgs...)
+		return c.commandVersion(ctx, command, target.VersionArgs...)
 	case VersionFromNPMGlobalPackage:
 		return c.npmGlobalPackageVersion(ctx, target.PackageName)
 	default:
@@ -193,4 +258,52 @@ func firstLine(output string) string {
 	output = strings.ReplaceAll(output, "\r", "\n")
 	line, _, _ := strings.Cut(output, "\n")
 	return strings.TrimSpace(line)
+}
+
+func (c Checker) lookPath(target Target) (string, string, error) {
+	for _, command := range target.commandCandidates() {
+		path, err := c.platform.LookPath(command)
+		if err == nil {
+			return command, path, nil
+		}
+	}
+	return "", "", fmt.Errorf("%s not found in PATH", target.Command)
+}
+
+func (t Target) commandCandidates() []string {
+	if len(t.Commands) > 0 {
+		return t.Commands
+	}
+	return []string{t.Command}
+}
+
+func (r CheckResult) IsIssue() bool {
+	return r.Requirement == RequirementRequired && r.Status != StatusOK
+}
+
+func normalizeTarget(target Target) Target {
+	if target.Command == "" {
+		target.Command = strings.ToLower(target.Name)
+	}
+	if target.Requirement == "" {
+		target.Requirement = RequirementOptional
+	}
+	if target.Category == "" {
+		target.Category = CategoryOptionalRuntimes
+	}
+	return target
+}
+
+func missingStatus(requirement Requirement) Status {
+	if requirement == RequirementRequired {
+		return StatusIssue
+	}
+	return StatusInfo
+}
+
+func missingMessage(requirement Requirement) string {
+	if requirement == RequirementRequired {
+		return "required tool not found in PATH"
+	}
+	return "optional tool not found in PATH"
 }

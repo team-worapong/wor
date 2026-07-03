@@ -60,3 +60,9 @@ Testing:
 - หลังแก้ไข ให้สรุปไฟล์ที่เปลี่ยนและเหตุผล
 - รักษา Build และ Test ให้ผ่านเสมอ
 - หากเพิ่ม Command ใหม่ ต้องกำหนด Acceptance Criteria ให้ชัดเจน
+
+Documentation Rules:
+- AGENTS.md คือแนวทางการพัฒนา
+- ARCHITECTURE.md คือ Architecture Specification หลัก
+- ห้ามสร้างเอกสาร Architecture ซ้ำ
+- หากต้องแก้ Architecture ให้แก้ที่ ARCHITECTURE.md

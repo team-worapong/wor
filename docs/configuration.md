@@ -1,12 +1,25 @@
 # WOR Configuration
 
-WOR resolves configuration in this order:
+This document describes the current Phase 1 configuration implementation. The
+root architecture specification defines the long-term configuration model.
+
+Phase 1 resolves configuration in this order:
 
 1. Default values.
-2. User configuration file.
-3. Environment variables.
+2. `WOR_CONFIG`, when set, selects the user configuration file path.
+3. User configuration file.
+4. Environment variables.
 
 Later sources override earlier sources.
+
+The root architecture specification includes command flags as the highest
+precedence source. Phase 1 does not implement command flags yet, so the current
+implementation uses defaults, a user configuration file, and environment
+variables. `WOR_CONFIG` is an environment variable that selects which user
+configuration file is read.
+
+Default values come from the platform-aware path resolver plus `text` output and
+`debug` set to `false`.
 
 ## Configuration File
 
@@ -27,6 +40,16 @@ Example:
 
 Missing files are ignored. Invalid JSON returns an error. Phase 1 supports only
 text output.
+
+Empty configuration files are ignored.
+
+Supported fields are:
+
+- `home_dir`
+- `data_dir`
+- `cache_dir`
+- `output_format`
+- `debug`
 
 ## Environment Variables
 
