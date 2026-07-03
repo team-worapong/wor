@@ -1,7 +1,6 @@
 # WOR
 
 WOR is a Runtime Manager for Web Applications.
-
 WOR is not a web framework, package manager, container platform, deployment
 platform, SSL manager, or web server manager. Its role is to provide a command
 line foundation for managing application runtimes and environments over time.
