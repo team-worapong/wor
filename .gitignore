@@ -7,6 +7,9 @@
 *.dll
 *.so
 *.dylib
+/wor
+/bin/
+/dist/
 
 # Test binary, built with `go test -c`
 *.test
@@ -26,6 +29,9 @@ go.work.sum
 
 # env file
 .env
+
+# OS metadata
+.DS_Store
 
 # Editor/IDE
 # .idea/
