@@ -41,8 +41,11 @@ func (a *App) cmdDatabase(args []string) error {
 
 	switch action {
 	case "add":
-		if err := a.Store.MakeDomainFiles(domain); err != nil {
-			return err
+		// A database profile can only be attached to a domain that
+		// already exists -- unlike the old behavior, this must NOT
+		// auto-create the domain via MakeDomainFiles.
+		if _, err := os.Stat(a.Store.DomainDir(domain)); err != nil {
+			return a.errf("domain not found: %s", domain)
 		}
 		if err := os.MkdirAll(filepath.Join(a.Cfg.Configs, "database"), 0o755); err != nil {
 			return err
@@ -52,20 +55,17 @@ func (a *App) cmdDatabase(args []string) error {
 		if err != nil {
 			return err
 		}
-		found := false
 		for _, d := range dbCfg.Databases {
 			if d.Profile == profile {
-				found = true
-				break
+				a.warn("Database profile already exists: %s/%s", domain, profile)
+				return nil
 			}
 		}
-		if !found {
-			dbCfg.Databases = append(dbCfg.Databases, domainmodel.Database{
-				Profile: profile, Label: label, Enabled: true, Backup: true,
-			})
-			if err := a.Store.SaveDatabases(dbCfg); err != nil {
-				return err
-			}
+		dbCfg.Databases = append(dbCfg.Databases, domainmodel.Database{
+			Profile: profile, Label: label, Enabled: true, Backup: true,
+		})
+		if err := a.Store.SaveDatabases(dbCfg); err != nil {
+			return err
 		}
 		if _, err := os.Stat(envFile); os.IsNotExist(err) {
 			if err := os.WriteFile(envFile, []byte(dbbackup.DefaultProfileEnv), 0o600); err != nil {
@@ -76,21 +76,35 @@ func (a *App) cmdDatabase(args []string) error {
 		return nil
 
 	case "remove":
+		if _, err := os.Stat(a.Store.DomainDir(domain)); err != nil {
+			return a.errf("domain not found: %s", domain)
+		}
 		dbCfg, err := a.Store.LoadDatabases(domain)
 		if err != nil {
 			return err
 		}
+		found := false
 		out := dbCfg.Databases[:0]
 		for _, d := range dbCfg.Databases {
-			if d.Profile != profile {
-				out = append(out, d)
+			if d.Profile == profile {
+				found = true
+				continue
 			}
+			out = append(out, d)
+		}
+		if !found {
+			return a.errf("database profile not found: %s/%s", domain, profile)
 		}
 		dbCfg.Databases = out
 		if err := a.Store.SaveDatabases(dbCfg); err != nil {
 			return err
 		}
-		a.ok("Database profile removed from config: %s/%s", domain, profile)
+		if _, err := os.Stat(envFile); os.IsNotExist(err) {
+			a.warn("env file not found, skipped: %s", envFile)
+		} else if err := os.Remove(envFile); err != nil {
+			return err
+		}
+		a.ok("Database profile removed: %s/%s", domain, profile)
 		return nil
 
 	case "backup":

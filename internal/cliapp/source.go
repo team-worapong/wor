@@ -11,14 +11,27 @@ import (
 	"time"
 
 	"wor/internal/domainmodel"
+	"wor/internal/gitignore"
 )
 
 // sourceBackup zips a domain or service source tree into
-// $WOR_HOME/backups/source/<domain>/<domain>_<name>_<timestamp>.zip,
+// $WOR_HOME/backups/<domain>/source/<domain>_<name>_<timestamp>.zip,
 // honoring the domain's backup.config.json exclude list. Uses Go's
 // archive/zip instead of shelling out to `zip`, so it works unmodified
-// on Windows.
-func (a *App) sourceBackup(target string) (string, error) {
+// on Windows. The domain-first path matches the directories `wor domain
+// add` pre-creates (internal/cliapp/domain.go) and the sibling database
+// backup convention (internal/dbbackup.ApplyRetention uses
+// <domain>/database/...).
+//
+// gitignoreOverride is "enable", "disable", or "" (use the domain's
+// backup.config.json source.useGitIgnore default, wired up here for the
+// first time -- it was a previously-unused config field). When the
+// effective setting is enabled and a .gitignore file exists at the root
+// of the tree being backed up, its patterns are combined with
+// backupCfg.Source.Exclude (a file is skipped if either one excludes
+// it) -- see internal/gitignore for the (deliberately root-only, not
+// full git semantics) matching rules.
+func (a *App) sourceBackup(target, gitignoreOverride string) (string, error) {
 	domain, service, err := domainmodel.ParseTarget(target)
 	if err != nil {
 		return "", err
@@ -38,14 +51,29 @@ func (a *App) sourceBackup(target string) (string, error) {
 		return "", err
 	}
 
+	useGitIgnore := backupCfg.Source.UseGitIgnore
+	switch gitignoreOverride {
+	case "enable":
+		useGitIgnore = true
+	case "disable":
+		useGitIgnore = false
+	}
+	var gi *gitignore.Matcher
+	if useGitIgnore {
+		gi, err = gitignore.Load(filepath.Join(src, ".gitignore"))
+		if err != nil {
+			return "", fmt.Errorf("reading .gitignore: %w", err)
+		}
+	}
+
 	ts := time.Now().Format("20060102_150405")
-	outDir := filepath.Join(a.Cfg.Backups, "source", domain)
+	outDir := filepath.Join(a.Cfg.Backups, domain, "source")
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return "", err
 	}
 	outFile := filepath.Join(outDir, fmt.Sprintf("%s_%s_%s.zip", domain, name, ts))
 
-	if err := zipDir(src, outFile, backupCfg.Source.Exclude); err != nil {
+	if err := zipDir(src, outFile, backupCfg.Source.Exclude, gi); err != nil {
 		return "", err
 	}
 	if backupCfg.Source.VerifyAfterBackup {
@@ -72,7 +100,7 @@ func excluded(relPath string, patterns []string) bool {
 	return false
 }
 
-func zipDir(src, dest string, excludePatterns []string) error {
+func zipDir(src, dest string, excludePatterns []string, gi *gitignore.Matcher) error {
 	out, err := os.Create(dest)
 	if err != nil {
 		return err
@@ -90,7 +118,7 @@ func zipDir(src, dest string, excludePatterns []string) error {
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
-		if excluded(rel, excludePatterns) {
+		if excluded(rel, excludePatterns) || gi.Match(rel, info.IsDir()) {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
@@ -144,7 +172,11 @@ func (a *App) cmdSource(args []string) error {
 
 	switch action {
 	case "backup":
-		out, err := a.sourceBackup(target)
+		gitignoreFlag := fl.Get("gitignore", "")
+		if gitignoreFlag != "" && gitignoreFlag != "enable" && gitignoreFlag != "disable" {
+			return a.errf("invalid --gitignore value: %s (expected enable or disable)", gitignoreFlag)
+		}
+		out, err := a.sourceBackup(target, gitignoreFlag)
 		if err != nil {
 			return err
 		}
@@ -193,7 +225,7 @@ func (a *App) cmdSource(args []string) error {
 				os.RemoveAll(tmp)
 				return a.errf("target exists. Use --replace to backup and replace: %s", dest)
 			}
-			if _, err := a.sourceBackup(target); err != nil {
+			if _, err := a.sourceBackup(target, ""); err != nil {
 				return err
 			}
 			os.RemoveAll(dest)

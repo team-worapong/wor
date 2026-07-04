@@ -43,8 +43,8 @@ Usage:
   wor source clone <domain>/<service> --git=<git-url> [--replace]
   wor source pull <domain>
   wor source pull <domain>/<service>
-  wor source backup <domain>
-  wor source backup <domain>/<service>
+  wor source backup <domain> [--gitignore=enable|disable]
+  wor source backup <domain>/<service> [--gitignore=enable|disable]
 
   wor deploy <host|domain/service> [--pull-only] [--no-pull] [--no-restart] [--force]
   wor ssl issue <host> [--provider=letsencrypt|self-signed|custom|none]

@@ -36,6 +36,25 @@ func (a *App) confirmYesDefaultYes(message string) bool {
 	return answer == "" || answer == "y" || answer == "yes"
 }
 
+// confirmYN is a stricter "[Y/n]" prompt (default yes on empty input):
+// unlike confirmYesDefaultYes, which silently treats any unrecognized
+// input as "no", this only accepts an empty answer, "Y"/"y", or "N"/"n"
+// -- anything else prints an error and re-prompts, so a stray keystroke
+// can't be misread as a real answer. Used by `wor domain remove`'s
+// per-item Logs/Web Data/Backups prompts.
+func (a *App) confirmYN(message string) bool {
+	for {
+		switch a.prompt(message + " [Y/n]: ") {
+		case "", "Y", "y":
+			return true
+		case "N", "n":
+			return false
+		default:
+			fmt.Fprintln(a.Err, "Please answer Y, y, N, or n.")
+		}
+	}
+}
+
 // requireTyped requires the user to type an exact confirmation word
 // (e.g. "YES", "RESET"), matching the shell version's high-stakes
 // confirmations for destructive operations.

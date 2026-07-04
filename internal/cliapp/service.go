@@ -148,6 +148,22 @@ func (a *App) requireTemplateRuntime(template string) error {
 	return nil
 }
 
+// requireServiceExists errors out with a clear message if domain/service
+// isn't a registered service, instead of letting the target fall
+// through to Store.GetServiceType's "static" fallback -- which exists
+// so a service record written before the Type field existed still
+// resolves to something, but silently gives the same answer for a
+// typo'd or never-created domain/service. Without this check,
+// `start`/`stop`/`restart`/`logs` on a nonexistent target were
+// misreporting it as "a static service with nothing to do" (a quiet
+// [OK]) instead of failing loudly.
+func (a *App) requireServiceExists(domain, service string) error {
+	if !a.Store.ServiceExists(domain, service) {
+		return a.errf("service not found: %s/%s", domain, service)
+	}
+	return nil
+}
+
 // buildGoService compiles a go template's service directory into the
 // binary named by entry, via `go build -o <entry> .`. Called both at
 // service creation and by `wor deploy` on every pulled commit (see
@@ -345,6 +361,9 @@ func (a *App) cmdService(args []string) error {
 		return nil
 
 	case "start":
+		if err := a.requireServiceExists(domain, service); err != nil {
+			return err
+		}
 		t := a.Store.GetServiceType(domain, service)
 		provider := domainmodel.ProcessProviderFor(t)
 		if provider == "" {
@@ -376,6 +395,9 @@ func (a *App) cmdService(args []string) error {
 		return nil
 
 	case "stop":
+		if err := a.requireServiceExists(domain, service); err != nil {
+			return err
+		}
 		t := a.Store.GetServiceType(domain, service)
 		switch domainmodel.ProcessProviderFor(t) {
 		case "pm2":
@@ -394,6 +416,9 @@ func (a *App) cmdService(args []string) error {
 		}
 
 	case "restart":
+		if err := a.requireServiceExists(domain, service); err != nil {
+			return err
+		}
 		t := a.Store.GetServiceType(domain, service)
 		provider := domainmodel.ProcessProviderFor(t)
 		if provider == "" {
@@ -415,12 +440,20 @@ func (a *App) cmdService(args []string) error {
 		return nil
 
 	case "logs":
+		if err := a.requireServiceExists(domain, service); err != nil {
+			return err
+		}
 		t := a.Store.GetServiceType(domain, service)
 		lines := fl.Get("lines", "100")
-		if domainmodel.ProcessProviderFor(t) == "systemd" {
+		switch domainmodel.ProcessProviderFor(t) {
+		case "systemd":
 			return systemd.Logs(domain, service, lines)
+		case "pm2":
+			return pm2.Run("logs", name, "--lines", lines)
+		default:
+			a.ok("%s service is served by host provider; no process logs. Use: wor host logs <host>", t)
+			return nil
 		}
-		return pm2.Run("logs", name, "--lines", lines)
 
 	default:
 		a.usage()
