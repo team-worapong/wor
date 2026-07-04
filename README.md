@@ -1,58 +1,132 @@
-# WOR
+# wor (Go rewrite)
 
-WOR is a Runtime Manager for Web Applications.
+Cross-platform (Linux / macOS / Windows) rewrite of `wor-cli`, an
+Infrastructure & Operations tool for managing Node.js/PHP services,
+static sites, nginx/apache host configuration, SSL certificates, and
+database backups under one filesystem convention.
 
-WOR is not a web framework, package manager, container platform, or process
-manager. Its role is to orchestrate runtime and infrastructure capabilities
-through clear interfaces over time.
+This is a from-scratch Go port of the original bash CLI. The command
+surface (subcommands, flags, directory layout) is kept as close to the
+original as possible; a few implementation details changed on purpose
+to make cross-platform support real rather than aspirational -- see
+`DESIGN.md` for the full list and reasoning.
 
-Phase 1 contains a clean Go project foundation, read-only diagnostics, and an
-explicit setup wizard for user configuration. It does not manage runtimes,
-deployment, SSL, or web servers yet.
+## Status
 
-Future integrations such as runtime management, deployment, SSL, and web server
-management must be exposed through explicit commands and implemented behind
-provider abstractions.
+This code was written and reviewed without access to a Go toolchain or
+internet connectivity in the authoring environment, so it has **not
+been compiled or run yet**. Every file was written carefully and
+cross-checked by hand (import usage, function signatures, struct
+fields), but a project this size will likely have a handful of small
+compile errors on the first build. Please run:
 
-`wor setup` is a re-runnable setup wizard. It performs read-only environment
-detection, shows a summary, and writes WOR user configuration only after explicit
-confirmation. It does not install packages, edit system configuration, reload
-services, choose a service-specific runtime, or create an initial website.
+```bash
+cd wor-go
+go build ./...
+```
 
-Configuration is resolved through the central config package. The priority is
-explicit options, environment variables, user configuration file, then default
-values. The user configuration file records the selected `WOR_HOME`, and
-environment variables can override it.
+and fix/report anything that comes up -- none of it should be
+architectural, just the kind of typo `go build` catches in seconds.
+
+## Build
+
+Requires Go 1.21+. No external dependencies (standard library only),
+so there is no `go mod download` step.
+
+```bash
+go build -o wor ./cmd/wor
+```
+
+Cross-compile for other platforms from any machine with Go installed:
+
+```bash
+GOOS=linux   GOARCH=amd64 go build -o dist/wor-linux-amd64     ./cmd/wor
+GOOS=linux   GOARCH=arm64 go build -o dist/wor-linux-arm64     ./cmd/wor
+GOOS=darwin  GOARCH=arm64 go build -o dist/wor-macos-arm64     ./cmd/wor
+GOOS=darwin  GOARCH=amd64 go build -o dist/wor-macos-amd64     ./cmd/wor
+GOOS=windows GOARCH=amd64 go build -o dist/wor-windows-amd64.exe ./cmd/wor
+```
 
 ## Commands
 
-```sh
-wor version
-wor help
-wor env
-wor doctor
+Same surface as wor-cli v1:
+
+```text
+wor version / --version
 wor setup
-wor domain add <domain>
-wor service add <fqdn>
+wor doctor
+wor env
+wor clean
+wor reset [--yes]
+wor create [host]
+    (interactive only -- prompts for service type, domain id
+    override, domain type, and hosts entry; accepts no other flags)
+
+wor domain add|remove <domain-id>
+
+wor service add <domain>/<service> [--host=] [--port=] [--entry=] [--service-type=static|node|go|python|php]
+wor service remove <domain>/<service> [--cascade] [--yes]
+wor service start|stop|restart <domain>/<service>
+wor service status
+wor service logs <domain>/<service> [--lines=100]
+
+wor host add <host> [--target=] [--server=nginx|apache] [--replace] [--domain-type=] [--add-hosts|--no-hosts]
+wor host remove <host> [--yes]
+wor host list / test / reload
+wor host logs <host> [access|error] [--lines=100]
+
+wor database add <domain>/<profile> [--label=]
+wor database remove <domain>/<profile>
+wor database backup <domain>/<profile>[/database]
+
+wor source clone <domain[/service]> --git=<url> [--replace]
+wor source pull <domain[/service]>
+wor source backup <domain[/service]>
+
+wor deploy <host|domain/service> [--pull-only] [--no-pull] [--no-restart] [--force]
+
+wor ssl issue <host> [--provider=letsencrypt|self-signed|custom|none]
+wor ssl renew|status|remove <host>
+wor ssl install <host> --cert=<path> --key=<path>
+
+wor info <host|domain/service>
 ```
 
-## Development
+## Service templates
 
-```sh
-go test ./...
-go build ./cmd/wor
+Five service types, chosen via `wor create`'s wizard or `--service-type=`
+on `wor service add` (see `docs/services.md` for the full spec):
+
+| Template | Runtime  | Process provider                 | Default entry point   |
+|----------|----------|-----------------------------------|-----------------------|
+| static   | none     | none (web server serves `public/`) | --                    |
+| node     | Node.js  | PM2 (every OS)                    | `app.js`              |
+| go       | Go       | systemd (Linux) / PM2 (else)      | `app` (compiled binary) |
+| python   | Python   | systemd (Linux) / PM2 (else)      | `app.py`               |
+| php      | PHP-FPM  | PHP-FPM (assumed already running) | `public/index.php`    |
+
+`wor create`/`wor service add` hard-block creating a service whose
+runtime isn't installed (`wor doctor` shows what's missing) rather than
+offering to configure it interactively. `go` services are rebuilt
+(`go build`) at creation and on every `wor deploy` that pulled a new
+commit -- unlike node, this isn't conditional on which files changed.
+
+## Project layout
+
+```text
+cmd/wor/                  entrypoint
+internal/
+  osutil/                 OS detection, elevation, privileged file ops (build-tagged unix/windows)
+  config/                 WOR_HOME + ~/.wor/config + host.env resolution
+  domainmodel/            services.config.json / databases.config.json / backup.config.json + resolution logic
+  hostprovider/           nginx + apache: paths, vhost generation, enable/reload/test
+  templates/              embedded nginx/apache vhost templates (unchanged from wor-cli v1)
+  render/                 {{VAR}} template substitution
+  servicefiles/           starter source tree generator (static/node/go/python/php scaffolds)
+  pm2/                    PM2 process manager wrapper + JSON ecosystem file generator
+  systemd/                systemd unit generator + start/stop/restart/status/logs (Linux go/python services)
+  ssl/                    letsencrypt/self-signed/custom certificate management
+  dbbackup/               mysql/mariadb/postgresql/sqlserver/sqlite backup (Go-native gzip, no restore)
+  hostsfile/              WOR-managed block in /etc/hosts or the Windows hosts file
+  cliapp/                 every subcommand, wired together
 ```
-
-The current diagnostics are read-only. `wor setup` can write the WOR user
-configuration file and create the centralized Phase 1 directory layout under the
-selected `WOR_HOME` after confirmation. It does not install programs, edit
-system files, deploy applications, manage runtimes, configure web servers, or
-manage SSL certificates.
-
-Service templates are currently a metadata registry for future service creation.
-Runtime-specific validation belongs to future service creation workflows, not
-`wor setup`.
-
-`wor domain add` and `wor service add` create local WOR metadata under
-`WOR_HOME` only. They do not edit hosts files, generate web server
-configuration, enable sites, install packages, or start/reload services.

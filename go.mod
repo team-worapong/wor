@@ -1,3 +1,3 @@
-module github.com/team-worapong/wor
+module wor
 
-go 1.26
+go 1.21
