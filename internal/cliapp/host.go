@@ -213,13 +213,21 @@ func (a *App) cmdHost(args []string) error {
 		if err != nil {
 			return err
 		}
-		return provider.Test()
+		if err := provider.Test(); err != nil {
+			return err
+		}
+		a.ok("%s config test passed", provider.Name)
+		return nil
 	case "reload":
 		provider, err := a.Provider()
 		if err != nil {
 			return err
 		}
-		return provider.Reload()
+		if err := provider.Reload(); err != nil {
+			return err
+		}
+		a.ok("%s reloaded", provider.Name)
+		return nil
 	}
 
 	if len(args) < 2 {

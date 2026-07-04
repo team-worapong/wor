@@ -9,6 +9,7 @@ package hostprovider
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -182,6 +183,18 @@ func pathExists(p string) bool {
 	return err == nil
 }
 
+// runWithOutput runs cmd with stdout/stderr attached to the current
+// process, so the underlying tool's own diagnostic output (nginx's
+// "syntax is ok", apache's configtest error with a line number, etc.)
+// reaches the user instead of being silently discarded -- which is
+// what a bare cmd.Run() does, since exec.Cmd defaults Stdout/Stderr to
+// nil (not inherited) when left unset.
+func runWithOutput(cmd *exec.Cmd) error {
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // runSudo builds and runs a possibly-elevated command via
 // osutil.SudoCommand, propagating a declined-elevation error the same
 // way as any other failure. Shared by the nginx/apache providers to
@@ -191,7 +204,7 @@ func runSudo(name string, args ...string) error {
 	if err != nil {
 		return err
 	}
-	return cmd.Run()
+	return runWithOutput(cmd)
 }
 
 func uniqueDirs(dirs ...string) []string {

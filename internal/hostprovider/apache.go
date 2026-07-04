@@ -167,7 +167,7 @@ func (a *apacheProvider) test() error {
 		return fmt.Errorf("apache binary not found")
 	}
 	if osutil.IsMacOS() || osutil.IsWindows() {
-		return exec.Command(bin, "configtest").Run()
+		return runWithOutput(exec.Command(bin, "configtest"))
 	}
 	return runSudo(bin, "configtest")
 }
@@ -179,18 +179,18 @@ func (a *apacheProvider) reload() error {
 	bin, ok := a.binary()
 	if osutil.IsMacOS() {
 		if osutil.Exists("brew") {
-			return exec.Command("brew", "services", "restart", "httpd").Run()
+			return runWithOutput(exec.Command("brew", "services", "restart", "httpd"))
 		}
 		if !ok {
 			return fmt.Errorf("apache binary not found")
 		}
-		return exec.Command(bin, "graceful").Run()
+		return runWithOutput(exec.Command(bin, "graceful"))
 	}
 	if osutil.IsWindows() {
 		if !ok {
 			return fmt.Errorf("apache binary not found")
 		}
-		return exec.Command(bin, "-k", "restart").Run()
+		return runWithOutput(exec.Command(bin, "-k", "restart"))
 	}
 	if osutil.Exists("systemctl") {
 		if err := runSudo("systemctl", "reload", "apache2"); err == nil {

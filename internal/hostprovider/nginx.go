@@ -154,7 +154,7 @@ func (n *nginxProvider) test() error {
 		return fmt.Errorf("nginx binary not found")
 	}
 	if osutil.IsMacOS() || osutil.IsWindows() {
-		return exec.Command(bin, "-t").Run()
+		return runWithOutput(exec.Command(bin, "-t"))
 	}
 	return runSudo(bin, "-t")
 }
@@ -166,18 +166,18 @@ func (n *nginxProvider) reload() error {
 	bin, ok := n.binary()
 	if osutil.IsMacOS() {
 		if osutil.Exists("brew") {
-			return exec.Command("brew", "services", "restart", "nginx").Run()
+			return runWithOutput(exec.Command("brew", "services", "restart", "nginx"))
 		}
 		if !ok {
 			return fmt.Errorf("nginx binary not found")
 		}
-		return exec.Command(bin, "-s", "reload").Run()
+		return runWithOutput(exec.Command(bin, "-s", "reload"))
 	}
 	if osutil.IsWindows() {
 		if !ok {
 			return fmt.Errorf("nginx binary not found")
 		}
-		return exec.Command(bin, "-s", "reload").Run()
+		return runWithOutput(exec.Command(bin, "-s", "reload"))
 	}
 	if osutil.Exists("systemctl") {
 		return runSudo("systemctl", "reload", "nginx")
@@ -268,9 +268,9 @@ func portString(p int) string {
 
 func shellRun(command string) error {
 	if osutil.IsWindows() {
-		return exec.Command("cmd", "/C", command).Run()
+		return runWithOutput(exec.Command("cmd", "/C", command))
 	}
-	return exec.Command("bash", "-lc", command).Run()
+	return runWithOutput(exec.Command("bash", "-lc", command))
 }
 
 // grepDirsForPattern is a small stand-in for `grep -R "keyword.*host"`
