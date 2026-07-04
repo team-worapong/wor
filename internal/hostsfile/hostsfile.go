@@ -16,8 +16,13 @@ import (
 	"wor/internal/osutil"
 )
 
-const blockStart = "# >>> WOR CLI HOSTS >>>"
-const blockEnd = "# <<< WOR CLI HOSTS <<<"
+// blockStart/blockEnd are deliberately independent of
+// internal/version.ProductName -- they're a structural marker written
+// into the user's real system hosts file, not a display string, so
+// renaming the product later must not silently orphan (or duplicate)
+// blocks a previous build already wrote.
+const blockStart = "# >>> WOR-HOSTS >>>"
+const blockEnd = "# <<< WOR-HOSTS <<<"
 
 // Path returns the OS hosts file location, honoring WOR_HOSTS_FILE for
 // tests/overrides the same way the shell version's hosts_file_path()

@@ -8,6 +8,7 @@ import (
 	"wor/internal/osutil"
 	"wor/internal/render"
 	"wor/internal/templates"
+	"wor/internal/version"
 )
 
 const defaultNotFoundHTML = `<!doctype html>
@@ -135,6 +136,7 @@ func (p *Provider) EnsureDefaultHost(store *domainmodel.Store, backupsDir, logsD
 		"DEFAULT_PUBLIC_PATH": publicPath,
 		"NGINX_LOG_DIR":       p.LogDir(),
 		"APACHE_LOG_DIR":      p.LogDir(),
+		"PRODUCT_NAME":        version.ProductName,
 	}
 	out := render.Render(tpl, vars)
 	if err := osutil.WriteFilePrivileged(availFile, []byte(out)); err != nil {

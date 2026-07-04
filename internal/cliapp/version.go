@@ -3,6 +3,7 @@ package cliapp
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"wor/internal/dbbackup"
 	"wor/internal/hostprovider"
@@ -12,8 +13,8 @@ import (
 
 func (a *App) cmdVersion() {
 	exe, _ := os.Executable()
-	fmt.Fprintln(a.Out, "WOR CLI")
-	fmt.Fprintln(a.Out, "-------")
+	fmt.Fprintln(a.Out, ProductName)
+	fmt.Fprintln(a.Out, strings.Repeat("-", len(ProductName)))
 	fmt.Fprintf(a.Out, "Version  : %s\n", Version)
 	fmt.Fprintf(a.Out, "OS       : %s\n", osutil.OSName())
 	fmt.Fprintf(a.Out, "WOR_HOME : %s\n", a.Cfg.WorHome)

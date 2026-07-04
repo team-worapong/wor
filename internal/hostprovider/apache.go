@@ -12,6 +12,7 @@ import (
 	"wor/internal/osutil"
 	"wor/internal/render"
 	"wor/internal/templates"
+	"wor/internal/version"
 )
 
 type apacheProvider struct {
@@ -286,6 +287,7 @@ func (a *apacheProvider) writeConfig(p WriteParams, siteFile string) error {
 		"PHP_FPM_ENDPOINT":         p.PHPFPMEndpoint,
 		"SSL_CERT_FILE":            p.SSLCertFile,
 		"SSL_KEY_FILE":             p.SSLKeyFile,
+		"PRODUCT_NAME":             version.ProductName,
 	}
 	vars["APACHE_SERVICE_CONFIG"] = render.Render(serviceTemplate, vars)
 	if p.SSLEnabled {

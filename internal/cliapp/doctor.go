@@ -233,7 +233,7 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 	fmt.Fprintln(a.Out, "------")
 	switch {
 	case !fail && notInitialized:
-		fmt.Fprintln(a.Out, "WOR CLI is installed. Runtime workspace is not initialized. Run: wor setup")
+		fmt.Fprintf(a.Out, "%s is installed. Runtime workspace is not initialized. Run: wor setup\n", ProductName)
 	case !fail:
 		fmt.Fprintln(a.Out, "WOR Ready")
 		fmt.Fprintln(a.Out, "Next: wor create app.example.com")

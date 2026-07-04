@@ -11,6 +11,7 @@ import (
 	"wor/internal/osutil"
 	"wor/internal/render"
 	"wor/internal/templates"
+	"wor/internal/version"
 )
 
 type nginxProvider struct {
@@ -238,6 +239,7 @@ func (n *nginxProvider) writeConfig(p WriteParams, siteFile string) error {
 		"DEFAULT_PUBLIC_PATH": p.DefaultPublicPath,
 		"NGINX_LOG_DIR":     n.logDir(),
 		"PHP_FPM_ENDPOINT":  p.PHPFPMEndpoint,
+		"PRODUCT_NAME":      version.ProductName,
 	}
 	if p.SSLEnabled {
 		httpsTpl, err := templates.Get("webserver/nginx", "https.conf")

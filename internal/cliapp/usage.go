@@ -3,7 +3,7 @@ package cliapp
 import "fmt"
 
 func (a *App) usage() {
-	fmt.Fprintf(a.Err, `WOR CLI (Go) v%s
+	fmt.Fprintf(a.Err, `%s (Go) v%s
 
 Usage:
   wor version
@@ -58,5 +58,5 @@ Environment:
   WOR_ENV=%s
   WOR_HOME=%s
   Config=%s
-`, Version, a.Cfg.Env, a.Cfg.WorHome, a.Cfg.ConfigFile)
+`, ProductName, Version, a.Cfg.Env, a.Cfg.WorHome, a.Cfg.ConfigFile)
 }

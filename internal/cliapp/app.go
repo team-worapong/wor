@@ -14,9 +14,15 @@ import (
 	"wor/internal/domainmodel"
 	"wor/internal/hostprovider"
 	"wor/internal/osutil"
+	"wor/internal/version"
 )
 
-const Version = "1.0.0-go"
+// Version and ProductName are re-exported from internal/version, which
+// is the single source of truth for both (see that package's doc
+// comment for why it's a separate leaf package rather than living
+// here directly).
+const Version = version.Number
+const ProductName = version.ProductName
 
 // App holds everything a subcommand needs.
 type App struct {
