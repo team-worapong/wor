@@ -24,6 +24,7 @@ type Metadata struct {
 	DomainName string `json:"domain_name"`
 	DomainPath string `json:"domain_path"`
 	CreatedAt  string `json:"created_at"`
+	Existing   bool   `json:"-"`
 }
 
 type Manager struct {
@@ -56,7 +57,14 @@ func (m Manager) Add(request AddRequest) (Metadata, error) {
 	if err := os.MkdirAll(domainPath, 0o755); err != nil {
 		return Metadata{}, fmt.Errorf("create domain directory: %w", err)
 	}
-	if err := writeMetadata(filepath.Join(domainPath, MetadataFileName), metadata); err != nil {
+	metadataPath := filepath.Join(domainPath, MetadataFileName)
+	if existing, ok, err := existingMetadata(metadataPath); err != nil {
+		return Metadata{}, err
+	} else if ok {
+		existing.Existing = true
+		return existing, nil
+	}
+	if err := writeMetadata(metadataPath, metadata); err != nil {
 		return Metadata{}, err
 	}
 	return metadata, nil
@@ -120,12 +128,6 @@ func validateLabel(label string) error {
 }
 
 func writeMetadata(path string, metadata Metadata) error {
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("domain %q already exists", metadata.DomainName)
-	} else if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("inspect domain metadata: %w", err)
-	}
-
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode domain metadata: %w", err)
@@ -135,6 +137,19 @@ func writeMetadata(path string, metadata Metadata) error {
 		return fmt.Errorf("write domain metadata: %w", err)
 	}
 	return nil
+}
+
+func existingMetadata(path string) (Metadata, bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		metadata, err := ReadMetadata(path)
+		if err != nil {
+			return Metadata{}, false, err
+		}
+		return metadata, true, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return Metadata{}, false, fmt.Errorf("inspect domain metadata: %w", err)
+	}
+	return Metadata{}, false, nil
 }
 
 type Catalog struct {

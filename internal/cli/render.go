@@ -99,7 +99,11 @@ func renderDoctor(renderer *output.Renderer, report doctor.Report) {
 }
 
 func renderDomainAdded(renderer *output.Renderer, metadata domain.Metadata) {
-	renderer.Success("domain added")
+	if metadata.Existing {
+		renderer.Warning("domain already exists")
+	} else {
+		renderer.Success("domain added")
+	}
 	renderer.Table(
 		[]string{"Key", "Value"},
 		[][]string{

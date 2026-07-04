@@ -66,6 +66,32 @@ func TestAddCreatesDomainDirectoryAndMetadata(t *testing.T) {
 	}
 }
 
+func TestAddExistingDomainIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	manager := NewManager(config.Config{WORHome: home})
+
+	first, err := manager.Add(AddRequest{Domain: "example.com"})
+	if err != nil {
+		t.Fatalf("add domain: %v", err)
+	}
+	second, err := manager.Add(AddRequest{Domain: "example.com"})
+	if err != nil {
+		t.Fatalf("add existing domain: %v", err)
+	}
+
+	if !second.Existing {
+		t.Fatal("Existing = false")
+	}
+	if second.DomainID != first.DomainID {
+		t.Fatalf("DomainID = %q", second.DomainID)
+	}
+	if second.CreatedAt != first.CreatedAt {
+		t.Fatalf("CreatedAt changed from %q to %q", first.CreatedAt, second.CreatedAt)
+	}
+}
+
 func TestCatalogFindsLongestMatchingDomainFromMetadata(t *testing.T) {
 	t.Parallel()
 

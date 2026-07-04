@@ -160,7 +160,17 @@ func resolveApplicationRoute(template Template, requested string) (string, error
 	if !strings.HasPrefix(requested, "/") {
 		return "", errors.New("application route must start with /")
 	}
-	return requested, nil
+	if requested == "/" {
+		return "", errors.New("application route must not be /")
+	}
+	if strings.ContainsAny(requested, " \t\r\n") {
+		return "", errors.New("application route must not contain whitespace")
+	}
+	normalized := strings.TrimRight(requested, "/")
+	if normalized == "" {
+		return "", errors.New("application route must not be /")
+	}
+	return normalized, nil
 }
 
 func supportsCustomApplicationRoute(template Template) bool {

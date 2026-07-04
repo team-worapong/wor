@@ -49,6 +49,29 @@ func TestServiceIDRules(t *testing.T) {
 	}
 }
 
+func TestInvalidServiceIDInputs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		fqdn       string
+		domainName string
+	}{
+		{name: "missing subdomain", fqdn: "example.com", domainName: "example.com"},
+		{name: "not under domain", fqdn: "app.example.net", domainName: "example.com"},
+		{name: "empty label", fqdn: "api..example.com", domainName: "example.com"},
+		{name: "unsupported character", fqdn: "bad_label.example.com", domainName: "example.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got, err := ServiceID(tt.fqdn, tt.domainName); err == nil {
+				t.Fatalf("ServiceID = %q, expected error", got)
+			}
+		})
+	}
+}
+
 func TestAddStaticServiceCreatesPublicDirectoryAndMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -84,6 +107,23 @@ func TestAddStaticServiceCreatesPublicDirectoryAndMetadata(t *testing.T) {
 	stored := readServiceMetadata(t, filepath.Join(wantServicePath, MetadataFileName))
 	if stored.FQDN != "app.example.com" || stored.ServiceTemplate != TemplateStatic {
 		t.Fatalf("stored metadata = %#v", stored)
+	}
+}
+
+func TestAddServiceRejectsInvalidFQDN(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t)
+	addDomain(t, cfg, "example.com")
+	manager := NewManager(cfg, fakeRuntimeChecker{})
+
+	_, err := manager.Add(context.Background(), AddRequest{FQDN: "api..example.com"})
+	if err == nil {
+		t.Fatal("expected invalid fqdn error")
+	}
+
+	if _, statErr := os.Stat(filepath.Join(cfg.WORHome, "domains", "com-example", "api")); !os.IsNotExist(statErr) {
+		t.Fatalf("service directory should not be created, stat error = %v", statErr)
 	}
 }
 
@@ -176,6 +216,46 @@ func TestStaticRuntimeTemplateUsesApplicationRoute(t *testing.T) {
 	stored := readServiceMetadata(t, filepath.Join(metadata.ServicePath, MetadataFileName))
 	if stored.ApplicationRoute != "/backend" {
 		t.Fatalf("stored ApplicationRoute = %q", stored.ApplicationRoute)
+	}
+}
+
+func TestApplicationRouteValidation(t *testing.T) {
+	t.Parallel()
+
+	template, ok := GetTemplate(TemplateStaticGo)
+	if !ok {
+		t.Fatal("missing static-go template")
+	}
+
+	tests := []struct {
+		name    string
+		route   string
+		want    string
+		wantErr bool
+	}{
+		{name: "missing leading slash", route: "app", wantErr: true},
+		{name: "root route", route: "/", wantErr: true},
+		{name: "whitespace", route: "/bad route", wantErr: true},
+		{name: "trailing slash", route: "/backend/", want: "/backend"},
+		{name: "multiple trailing slash", route: "/backend///", want: "/backend"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := resolveApplicationRoute(template, tt.route)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("route = %q, expected error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolve route: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("route = %q", got)
+			}
+		})
 	}
 }
 
