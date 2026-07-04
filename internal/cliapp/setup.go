@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"wor/internal/config"
@@ -213,13 +214,15 @@ func (a *App) setupWebServer(configExisted bool, existingHostProvider string) er
 // setupPHP detects PHP and PHP-FPM and records a PHP_FPM_ENDPOINT,
 // closing the gap where `wor create`/`wor service add` would hard-block
 // PHP services with "Configure PHP_FPM_ENDPOINT in .../host.env" and
-// leave the user to find and set it by hand. Unlike setupWebServer,
-// there's nothing to choose between here -- PHP is either installed or
-// it isn't, and there's normally at most one PHP-FPM to point at -- so
-// this detects and confirms a single endpoint rather than presenting a
-// numbered menu. PHP is optional: if it's not installed, this records
-// that and returns without prompting for anything, exactly like
-// letsencrypt being unavailable doesn't block setupSSL.
+// leave the user to find and set it by hand. The common case (a single
+// endpoint found at one of the usual unix socket paths) just asks for
+// a yes/no confirmation; if that fails but php-fpm's own config says
+// otherwise (see hostprovider.DetectListenAddrs), those are presented
+// as a numbered menu instead of making the user type a path blind, the
+// same way setupWebServer numbers its nginx/apache/skip choices. PHP is
+// optional: if it's not installed, this records that and returns
+// without prompting for anything, exactly like letsencrypt being
+// unavailable doesn't block setupSSL.
 func (a *App) setupPHP(existingEndpoint string) {
 	fmt.Fprintln(a.Out)
 	fmt.Fprintln(a.Out, "PHP / PHP-FPM")
@@ -255,8 +258,25 @@ func (a *App) setupPHP(existingEndpoint string) {
 			a.Cfg.PHPFPMEndpoint = ep
 			return
 		}
+	} else if candidates := hostprovider.DetectListenAddrs(a.Cfg.PHPFPM.Bin); len(candidates) > 0 {
+		// The fixed unix-socket list came up empty, but php-fpm's own
+		// config says otherwise (e.g. it's not started yet so no socket
+		// file exists on disk, or it listens on 127.0.0.1:port instead
+		// of a unix socket) -- offer what was actually found as a
+		// numbered menu instead of making the user type it blind.
+		fmt.Fprintln(a.Out, "Detected PHP-FPM listen address(es):")
+		for i, c := range candidates {
+			fmt.Fprintf(a.Out, "%d. %s\n", i+1, c)
+		}
+		manualOption := len(candidates) + 1
+		fmt.Fprintf(a.Out, "%d. Enter manually\n", manualOption)
+		choice := a.promptDefault("Choose", "1")
+		if n, err := strconv.Atoi(choice); err == nil && n >= 1 && n <= len(candidates) {
+			a.Cfg.PHPFPMEndpoint = candidates[n-1]
+			return
+		}
 	} else {
-		a.warn("No PHP-FPM endpoint found at the usual unix socket locations.")
+		a.warn("No PHP-FPM endpoint found at the usual unix socket locations or in php-fpm's own config.")
 	}
 
 	a.Cfg.PHPFPMEndpoint = a.promptDefault(
