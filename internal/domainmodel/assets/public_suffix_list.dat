@@ -1,0 +1,20 @@
+// Minimal bundled Public Suffix List subset for WOR apex-domain detection.
+// Supports normal, wildcard, and exception rules.
+com
+net
+org
+test
+th
+co.th
+ac.th
+go.th
+or.th
+uk
+co.uk
+au
+com.au
+jp
+co.jp
+ck
+*.ck
+!www.ck
