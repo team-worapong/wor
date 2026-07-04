@@ -39,8 +39,10 @@ Usage:
   wor database remove <domain>/<profile>
   wor database backup <domain>/<profile>[/database]
 
-  wor source clone <domain> --git=<git-url> [--replace]
-  wor source clone <domain>/<service> --git=<git-url> [--replace]
+  wor source clone <domain> --git=<git-url>
+  wor source clone <domain>/<service> --git=<git-url>
+      (if the target already has source, it's backed up via
+      "wor source backup" automatically, then replaced -- no flag needed)
   wor source pull <domain>
   wor source pull <domain>/<service>
   wor source backup <domain> [--gitignore=enable|disable]

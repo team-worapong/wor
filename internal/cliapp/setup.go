@@ -41,6 +41,7 @@ func (a *App) cmdSetup(args []string) error {
 	existingWorHome := a.Cfg.WorHome
 	existingHostProvider := a.Cfg.HostProvider
 	existingSSLProvider := a.Cfg.SSLProvider
+	existingPHPFPMEndpoint := a.Cfg.PHPFPMEndpoint
 
 	fmt.Fprintln(a.Out, "WOR Setup Wizard")
 	fmt.Fprintln(a.Out, "================")
@@ -108,6 +109,9 @@ func (a *App) cmdSetup(args []string) error {
 	// Step 4: SSL provider.
 	a.setupSSL(configExisted, existingSSLProvider)
 
+	// Step 5: PHP / PHP-FPM.
+	a.setupPHP(existingPHPFPMEndpoint)
+
 	// Summary.
 	fmt.Fprintln(a.Out)
 	fmt.Fprintln(a.Out, "Setup Summary")
@@ -116,6 +120,15 @@ func (a *App) cmdSetup(args []string) error {
 	fmt.Fprintf(a.Out, "WOR_HOME     : %s\n", a.Cfg.WorHome)
 	fmt.Fprintf(a.Out, "host_provider: %s\n", a.Cfg.HostProviderName())
 	fmt.Fprintf(a.Out, "ssl_provider : %s\n", a.Cfg.SSLProviderName())
+	if a.Cfg.PHPEnabled {
+		if a.Cfg.PHPFPMEndpoint != "" {
+			fmt.Fprintf(a.Out, "php_fpm      : %s\n", a.Cfg.PHPFPMEndpoint)
+		} else {
+			fmt.Fprintln(a.Out, "php_fpm      : not configured (PHP services will fail preflight)")
+		}
+	} else {
+		fmt.Fprintln(a.Out, "php_fpm      : php not installed")
+	}
 	fmt.Fprintf(a.Out, "config       : %s\n", a.Cfg.ConfigFile)
 	fmt.Fprintln(a.Out)
 
@@ -195,6 +208,61 @@ func (a *App) setupWebServer(configExisted bool, existingHostProvider string) er
 			return a.errf("invalid web server provider: %s", choice)
 		}
 	}
+}
+
+// setupPHP detects PHP and PHP-FPM and records a PHP_FPM_ENDPOINT,
+// closing the gap where `wor create`/`wor service add` would hard-block
+// PHP services with "Configure PHP_FPM_ENDPOINT in .../host.env" and
+// leave the user to find and set it by hand. Unlike setupWebServer,
+// there's nothing to choose between here -- PHP is either installed or
+// it isn't, and there's normally at most one PHP-FPM to point at -- so
+// this detects and confirms a single endpoint rather than presenting a
+// numbered menu. PHP is optional: if it's not installed, this records
+// that and returns without prompting for anything, exactly like
+// letsencrypt being unavailable doesn't block setupSSL.
+func (a *App) setupPHP(existingEndpoint string) {
+	fmt.Fprintln(a.Out)
+	fmt.Fprintln(a.Out, "PHP / PHP-FPM")
+
+	if !osutil.Exists("php") {
+		fmt.Fprintln(a.Out, "php     : not installed")
+		a.info("PHP not installed -- skipping PHP-FPM setup. Install PHP and re-run wor setup if you plan to host PHP sites.")
+		a.Cfg.PHPEnabled = false
+		return
+	}
+	a.Cfg.PHP.Bin = osutil.Which("php")
+	a.Cfg.PHP.Version = osutil.RunVersion("php", "--version")
+	a.Cfg.PHPEnabled = true
+	fmt.Fprintf(a.Out, "php     : %s\n", a.Cfg.PHP.Version)
+
+	if osutil.Exists("php-fpm") {
+		a.Cfg.PHPFPM.Bin = osutil.Which("php-fpm")
+		a.Cfg.PHPFPM.Version = osutil.RunVersion("php-fpm", "--version")
+		fmt.Fprintf(a.Out, "php-fpm : %s\n", a.Cfg.PHPFPM.Version)
+	} else {
+		fmt.Fprintln(a.Out, "php-fpm : not installed")
+	}
+
+	// Reuse whatever was already recorded (env var, prior config file,
+	// or host.env) as the starting point, so re-running setup doesn't
+	// silently drop a manually-configured endpoint.
+	if existingEndpoint != "" {
+		a.Cfg.PHPFPMEndpoint = existingEndpoint
+	}
+
+	if ep, ok := hostprovider.PHPFPMEndpoint(a.Cfg); ok {
+		if a.confirmYesDefaultYes(fmt.Sprintf("Detected PHP-FPM endpoint: %s. Use it?", ep)) {
+			a.Cfg.PHPFPMEndpoint = ep
+			return
+		}
+	} else {
+		a.warn("No PHP-FPM endpoint found at the usual unix socket locations.")
+	}
+
+	a.Cfg.PHPFPMEndpoint = a.promptDefault(
+		"Enter PHP-FPM endpoint (unix:/path/to.sock or host:port), or leave blank to configure later",
+		a.Cfg.PHPFPMEndpoint,
+	)
 }
 
 func (a *App) setupSSL(configExisted bool, existingSSLProvider string) {

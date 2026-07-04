@@ -84,6 +84,101 @@ func (a *App) sourceBackup(target, gitignoreOverride string) (string, error) {
 	return outFile, nil
 }
 
+// replaceDir swaps dest for the freshly cloned tmp dir without ever
+// leaving dest empty: the existing tree is moved aside first (not
+// deleted), the new one is moved into place, and only then is the old
+// one discarded. If moving the new tree in fails for any reason
+// (including tmp/dest being on different filesystems -- see moveDir),
+// the original is moved back exactly where it was and the error is
+// returned, so a failed `wor source clone` never destroys the
+// pre-existing source. Callers are expected to have already taken a
+// `wor source backup` of dest before calling this, since the discarded
+// old copy is not otherwise recoverable.
+func replaceDir(tmp, dest string) error {
+	stash := fmt.Sprintf("%s.wor-old-%d", dest, time.Now().UnixNano())
+	if err := os.Rename(dest, stash); err != nil {
+		os.RemoveAll(tmp)
+		return fmt.Errorf("could not move existing %s aside: %w", dest, err)
+	}
+	if err := moveDir(tmp, dest); err != nil {
+		os.RemoveAll(dest)
+		if rerr := os.Rename(stash, dest); rerr != nil {
+			return fmt.Errorf("%w (additionally failed to restore original %s: %s)", err, dest, rerr)
+		}
+		return err
+	}
+	os.RemoveAll(stash)
+	return nil
+}
+
+// moveDir moves src to dest, the cheap way (os.Rename) when possible.
+// os.Rename fails with "invalid cross-device link" (or a platform
+// equivalent) when src and dest are on different filesystems --
+// plausible here since src is under the configured tmp dir (which may
+// be system tmp, e.g. a tmpfs mount) while dest is under WOR_HOME. That
+// error isn't simple to detect portably across Linux/macOS/Windows, so
+// any rename failure just falls through to a recursive copy instead of
+// trying to distinguish the cause.
+func moveDir(src, dest string) error {
+	if err := os.Rename(src, dest); err == nil {
+		return nil
+	}
+	if err := copyDir(src, dest); err != nil {
+		os.RemoveAll(dest)
+		return err
+	}
+	os.RemoveAll(src)
+	return nil
+}
+
+// copyDir recursively copies src's contents into dest (created if
+// needed), preserving file modes and symlinks.
+func copyDir(src, dest string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := dest
+		if rel != "." {
+			target = filepath.Join(dest, rel)
+		}
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		case info.IsDir():
+			return os.MkdirAll(target, info.Mode())
+		default:
+			return copyFile(path, target, info.Mode())
+		}
+	})
+}
+
+func copyFile(src, dest string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
+
 func excluded(relPath string, patterns []string) bool {
 	base := filepath.Base(relPath)
 	for _, pat := range patterns {
@@ -205,7 +300,6 @@ func (a *App) cmdSource(args []string) error {
 		if git == "" {
 			return a.errf("--git is required")
 		}
-		replace := fl.Has("replace")
 		domain, service, err := domainmodel.ParseTarget(target)
 		if err != nil {
 			return err
@@ -218,20 +312,28 @@ func (a *App) cmdSource(args []string) error {
 		cloneCmd := exec.Command("git", "clone", git, tmp)
 		cloneCmd.Stdout, cloneCmd.Stderr = a.Out, a.Err
 		if err := cloneCmd.Run(); err != nil {
+			os.RemoveAll(tmp)
 			return err
 		}
+
 		if _, err := os.Stat(dest); err == nil {
-			if !replace {
-				os.RemoveAll(tmp)
-				return a.errf("target exists. Use --replace to backup and replace: %s", dest)
-			}
+			// Target already has source: back it up, then swap it for
+			// the freshly cloned tree. No --replace flag needed -- this
+			// is always the desired outcome, the backup is the safety
+			// net.
 			if _, err := a.sourceBackup(target, ""); err != nil {
+				os.RemoveAll(tmp)
 				return err
 			}
-			os.RemoveAll(dest)
+			if err := replaceDir(tmp, dest); err != nil {
+				return err
+			}
+			a.ok("Cloned: %s", target)
+			return nil
 		}
+
 		os.MkdirAll(filepath.Dir(dest), 0o755)
-		if err := os.Rename(tmp, dest); err != nil {
+		if err := moveDir(tmp, dest); err != nil {
 			return err
 		}
 		a.ok("Cloned: %s", target)
