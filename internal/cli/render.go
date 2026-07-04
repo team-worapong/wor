@@ -2,12 +2,16 @@ package cli
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/team-worapong/wor/internal/doctor"
+	"github.com/team-worapong/wor/internal/domain"
 	"github.com/team-worapong/wor/internal/engine"
 	"github.com/team-worapong/wor/internal/output"
 	worRuntime "github.com/team-worapong/wor/internal/runtime"
+	"github.com/team-worapong/wor/internal/service"
+	"github.com/team-worapong/wor/internal/setup"
 )
 
 func renderVersion(renderer *output.Renderer, report engine.VersionReport) {
@@ -53,7 +57,7 @@ func renderEnvironment(renderer *output.Renderer, report engine.EnvironmentRepor
 		[]string{"Key", "Value"},
 		[][]string{
 			{"Config file", report.Config.ConfigFile},
-			{"Home directory", report.Config.HomeDir},
+			{"WOR_HOME", report.Config.WORHome},
 			{"Data directory", report.Config.DataDir},
 			{"Cache directory", report.Config.CacheDir},
 			{"Output format", report.Config.OutputFormat},
@@ -94,6 +98,39 @@ func renderDoctor(renderer *output.Renderer, report doctor.Report) {
 	renderer.Success("doctor completed")
 }
 
+func renderDomainAdded(renderer *output.Renderer, metadata domain.Metadata) {
+	renderer.Success("domain added")
+	renderer.Table(
+		[]string{"Key", "Value"},
+		[][]string{
+			{"Domain ID", metadata.DomainID},
+			{"Domain name", metadata.DomainName},
+			{"Domain path", metadata.DomainPath},
+			{"Created at", metadata.CreatedAt},
+		},
+	)
+}
+
+func renderServiceAdded(renderer *output.Renderer, metadata service.Metadata) {
+	renderer.Success("service added")
+	rows := [][]string{
+		{"Service ID", metadata.ServiceID},
+		{"Domain ID", metadata.DomainID},
+		{"Domain name", metadata.DomainName},
+		{"FQDN", metadata.FQDN},
+		{"Template", metadata.ServiceTemplate},
+	}
+	if strings.TrimSpace(metadata.ApplicationRoute) != "" {
+		rows = append(rows, []string{"Application route", metadata.ApplicationRoute})
+	}
+	rows = append(rows,
+		[]string{"Public path", metadata.PublicPath},
+		[]string{"Service path", metadata.ServicePath},
+		[]string{"Created at", metadata.CreatedAt},
+	)
+	renderer.Table([]string{"Key", "Value"}, rows)
+}
+
 func doctorRows(results []worRuntime.CheckResult) [][]string {
 	rows := make([][]string, 0, len(results))
 	for _, result := range results {
@@ -121,4 +158,150 @@ func valueOrDash(value string) string {
 		return "-"
 	}
 	return value
+}
+
+func detectionRows(detections []setup.Detection) [][]string {
+	rows := make([][]string, 0, len(detections))
+	for _, detection := range detections {
+		rows = append(rows, []string{
+			detection.Name,
+			foundText(detection),
+			valueOrDash(detection.Version),
+			valueOrDash(detection.Path),
+			detectionStatus(detection),
+		})
+	}
+	return rows
+}
+
+func foundText(detection setup.Detection) string {
+	if !detection.Supported {
+		return "not supported"
+	}
+	if detection.Found {
+		return "found"
+	}
+	return "not found"
+}
+
+func detectionStatus(detection setup.Detection) string {
+	status := detection.Status
+	if status == "" {
+		status = "unknown"
+	}
+	if detection.Message != "" {
+		return status + ": " + detection.Message
+	}
+	return status
+}
+
+func isWebServerProviderTitle(title string) bool {
+	return strings.Contains(strings.ToLower(title), "web server providers")
+}
+
+func isWebServerProviderPrompt(prompt string) bool {
+	return strings.EqualFold(strings.TrimSpace(prompt), "Select Web Server Provider:")
+}
+
+func webServerProviderDetection(detections []setup.Detection, provider string) setup.Detection {
+	switch provider {
+	case setup.WebServerNginx:
+		return detectionByName(detections, "Nginx")
+	case setup.WebServerApache:
+		return detectionByName(detections, "Apache")
+	default:
+		return setup.Detection{Name: provider, Supported: false, Status: "unsupported", Message: "not supported"}
+	}
+}
+
+func detectionByName(detections []setup.Detection, name string) setup.Detection {
+	for _, detection := range detections {
+		if strings.EqualFold(detection.Name, name) {
+			return detection
+		}
+	}
+	return setup.Detection{Name: name, Supported: true, Status: "info", Message: "not found"}
+}
+
+func detectionIcon(detection setup.Detection) string {
+	if !detection.Supported {
+		return "-"
+	}
+	if detection.Found {
+		return "✓"
+	}
+	return "✕"
+}
+
+func detectionChoiceStatus(detection setup.Detection) string {
+	if !detection.Supported {
+		return "not supported"
+	}
+	if detection.Found {
+		if version := compactVersion(detection.Name, detection.Version); version != "" {
+			return version
+		}
+		return "found"
+	}
+	return "not found"
+}
+
+func compactDetectionStatus(detection setup.Detection) string {
+	if !detection.Supported {
+		return "not supported"
+	}
+	if detection.Found {
+		if version := compactVersion(detection.Name, detection.Version); version != "" {
+			return version
+		}
+		return "found"
+	}
+	return "not found"
+}
+
+func compactDetectionName(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "node.js":
+		return "node"
+	case "php-fpm":
+		return "php-fpm"
+	default:
+		return strings.ToLower(strings.TrimSpace(name))
+	}
+}
+
+var versionPatterns = map[string]*regexp.Regexp{
+	"apache":  regexp.MustCompile(`Apache/([0-9][^ ]*)`),
+	"certbot": regexp.MustCompile(`certbot ([0-9][^ ]*)`),
+	"git":     regexp.MustCompile(`git version ([0-9][^ ]*)`),
+	"go":      regexp.MustCompile(`go version go([0-9][^ ]*)`),
+	"nginx":   regexp.MustCompile(`nginx/([0-9][^ ]*)`),
+	"php":     regexp.MustCompile(`PHP ([0-9][^ ]*)`),
+	"php-fpm": regexp.MustCompile(`PHP ([0-9][^ ]*)`),
+	"python":  regexp.MustCompile(`Python ([0-9][^ ]*)`),
+}
+
+func compactVersion(name, version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return ""
+	}
+
+	key := compactDetectionName(name)
+	if pattern, ok := versionPatterns[key]; ok {
+		matches := pattern.FindStringSubmatch(version)
+		if len(matches) > 1 {
+			return strings.Trim(matches[1], ",")
+		}
+	}
+
+	return firstToken(version)
+}
+
+func firstToken(value string) string {
+	fields := strings.Fields(strings.TrimSpace(value))
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.Trim(fields[0], ",")
 }

@@ -12,30 +12,50 @@ import (
 )
 
 const (
-	EnvConfig   = "WOR_CONFIG"
-	EnvHome     = "WOR_HOME"
-	EnvDataDir  = "WOR_DATA_DIR"
-	EnvCacheDir = "WOR_CACHE_DIR"
-	EnvOutput   = "WOR_OUTPUT"
-	EnvDebug    = "WOR_DEBUG"
+	EnvConfig      = "WOR_CONFIG"
+	EnvEnvironment = "WOR_ENVIRONMENT"
+	EnvHome        = "WOR_HOME"
+	EnvDataDir     = "WOR_DATA_DIR"
+	EnvCacheDir    = "WOR_CACHE_DIR"
+	EnvOutput      = "WOR_OUTPUT"
+	EnvDebug       = "WOR_DEBUG"
 )
 
 // Config is the effective read-only configuration used by WOR.
 type Config struct {
-	ConfigFile   string
-	HomeDir      string
-	DataDir      string
-	CacheDir     string
-	OutputFormat string
-	Debug        bool
+	ConfigFile        string
+	Environment       string
+	WORHome           string
+	DataDir           string
+	CacheDir          string
+	OutputFormat      string
+	Debug             bool
+	WebServerProvider string
+	SSLProvider       string
+	RuntimeDetections []RuntimeDetection
+}
+
+type RuntimeDetection struct {
+	Name    string `json:"name"`
+	Command string `json:"command,omitempty"`
+	Found   bool   `json:"found"`
+	Path    string `json:"path,omitempty"`
+	Version string `json:"version,omitempty"`
+	Status  string `json:"status,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type fileConfig struct {
-	HomeDir      string `json:"home_dir"`
-	DataDir      string `json:"data_dir"`
-	CacheDir     string `json:"cache_dir"`
-	OutputFormat string `json:"output_format"`
-	Debug        *bool  `json:"debug"`
+	Environment       string             `json:"environment"`
+	WORHome           string             `json:"wor_home"`
+	HomeDir           string             `json:"home_dir,omitempty"`
+	DataDir           string             `json:"data_dir"`
+	CacheDir          string             `json:"cache_dir"`
+	OutputFormat      string             `json:"output_format"`
+	Debug             *bool              `json:"debug"`
+	WebServerProvider string             `json:"web_server_provider"`
+	SSLProvider       string             `json:"ssl_provider"`
+	RuntimeDetections []RuntimeDetection `json:"runtime_detections"`
 }
 
 // Loader combines defaults, an optional user config file, and environment
@@ -43,6 +63,67 @@ type fileConfig struct {
 type Loader struct {
 	env   Env
 	paths paths.Paths
+}
+
+type LoadOptions struct {
+	AppName  string
+	Env      Env
+	Paths    paths.Paths
+	Explicit ExplicitOptions
+}
+
+type ExplicitOptions struct {
+	ConfigFile   string
+	Environment  string
+	WORHome      string
+	DataDir      string
+	CacheDir     string
+	OutputFormat string
+	Debug        *bool
+}
+
+func Load(system paths.Platform) (Config, error) {
+	return LoadWithOptions(system, LoadOptions{})
+}
+
+func LoadWithOptions(system paths.Platform, options LoadOptions) (Config, error) {
+	appName := strings.TrimSpace(options.AppName)
+	if appName == "" {
+		appName = "wor"
+	}
+
+	resolvedPaths := options.Paths
+	if resolvedPaths.ConfigFile == "" && strings.TrimSpace(options.Explicit.ConfigFile) != "" {
+		resolvedPaths.ConfigFile = filepath.Clean(options.Explicit.ConfigFile)
+	}
+	if resolvedPaths.ConfigFile == "" {
+		if system == nil {
+			return Config{}, errors.New("platform is required when paths are not provided")
+		}
+		var err error
+		resolvedPaths, err = paths.NewResolver(system, appName).Resolve()
+		if err != nil {
+			return Config{}, err
+		}
+	}
+
+	env := options.Env
+	if env == nil {
+		env = FromOSEnv()
+	}
+
+	return load(env, resolvedPaths, options.Explicit)
+}
+
+func Defaults(resolvedPaths paths.Paths) Config {
+	return Config{
+		ConfigFile:   resolvedPaths.ConfigFile,
+		WORHome:      resolvedPaths.HomeDir,
+		DataDir:      resolvedPaths.DataDir,
+		CacheDir:     resolvedPaths.CacheDir,
+		OutputFormat: "text",
+		Debug:        false,
+	}
 }
 
 func NewLoader(env Env, resolvedPaths paths.Paths) Loader {
@@ -53,16 +134,15 @@ func NewLoader(env Env, resolvedPaths paths.Paths) Loader {
 }
 
 func (l Loader) Load() (Config, error) {
-	cfg := Config{
-		ConfigFile:   l.paths.ConfigFile,
-		HomeDir:      l.paths.HomeDir,
-		DataDir:      l.paths.DataDir,
-		CacheDir:     l.paths.CacheDir,
-		OutputFormat: "text",
-		Debug:        false,
-	}
+	return load(l.env, l.paths, ExplicitOptions{})
+}
 
-	if value := strings.TrimSpace(l.env.Get(EnvConfig)); value != "" {
+func load(env Env, resolvedPaths paths.Paths, explicit ExplicitOptions) (Config, error) {
+	cfg := Defaults(resolvedPaths)
+	if value := strings.TrimSpace(env.Get(EnvConfig)); value != "" {
+		cfg.ConfigFile = filepath.Clean(value)
+	}
+	if value := strings.TrimSpace(explicit.ConfigFile); value != "" {
 		cfg.ConfigFile = filepath.Clean(value)
 	}
 
@@ -70,35 +150,96 @@ func (l Loader) Load() (Config, error) {
 		return Config{}, err
 	}
 
-	if value := strings.TrimSpace(l.env.Get(EnvHome)); value != "" {
-		cfg.HomeDir = filepath.Clean(value)
+	if err := applyEnv(&cfg, env); err != nil {
+		return Config{}, err
 	}
-	if value := strings.TrimSpace(l.env.Get(EnvDataDir)); value != "" {
+	applyExplicit(&cfg, explicit)
+	if err := validate(&cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func applyEnv(cfg *Config, env Env) error {
+	if value := strings.TrimSpace(env.Get(EnvEnvironment)); value != "" {
+		cfg.Environment = strings.ToLower(value)
+	}
+	if value := strings.TrimSpace(env.Get(EnvHome)); value != "" {
+		cfg.WORHome = filepath.Clean(value)
+	}
+	if value := strings.TrimSpace(env.Get(EnvDataDir)); value != "" {
 		cfg.DataDir = filepath.Clean(value)
 	}
-	if value := strings.TrimSpace(l.env.Get(EnvCacheDir)); value != "" {
+	if value := strings.TrimSpace(env.Get(EnvCacheDir)); value != "" {
 		cfg.CacheDir = filepath.Clean(value)
 	}
-	if value := strings.TrimSpace(l.env.Get(EnvOutput)); value != "" {
+	if value := strings.TrimSpace(env.Get(EnvOutput)); value != "" {
 		cfg.OutputFormat = strings.ToLower(value)
 	}
-	if value := strings.TrimSpace(l.env.Get(EnvDebug)); value != "" {
+	if value := strings.TrimSpace(env.Get(EnvDebug)); value != "" {
 		debug, err := parseBool(value)
 		if err != nil {
-			return Config{}, fmt.Errorf("%s: %w", EnvDebug, err)
+			return fmt.Errorf("%s: %w", EnvDebug, err)
 		}
 		cfg.Debug = debug
 	}
+	return nil
+}
 
+func applyExplicit(cfg *Config, explicit ExplicitOptions) {
+	if value := strings.TrimSpace(explicit.ConfigFile); value != "" {
+		cfg.ConfigFile = filepath.Clean(value)
+	}
+	if value := strings.TrimSpace(explicit.Environment); value != "" {
+		cfg.Environment = strings.ToLower(value)
+	}
+	if value := strings.TrimSpace(explicit.WORHome); value != "" {
+		cfg.WORHome = filepath.Clean(value)
+	}
+	if value := strings.TrimSpace(explicit.DataDir); value != "" {
+		cfg.DataDir = filepath.Clean(value)
+	}
+	if value := strings.TrimSpace(explicit.CacheDir); value != "" {
+		cfg.CacheDir = filepath.Clean(value)
+	}
+	if value := strings.TrimSpace(explicit.OutputFormat); value != "" {
+		cfg.OutputFormat = strings.ToLower(value)
+	}
+	if explicit.Debug != nil {
+		cfg.Debug = *explicit.Debug
+	}
+}
+
+func validate(cfg *Config) error {
 	if cfg.OutputFormat == "" {
 		cfg.OutputFormat = "text"
 	}
 	cfg.OutputFormat = strings.ToLower(strings.TrimSpace(cfg.OutputFormat))
 	if cfg.OutputFormat != "text" {
-		return Config{}, fmt.Errorf("output_format %q is not supported in phase 1", cfg.OutputFormat)
+		return fmt.Errorf("output_format %q is not supported in phase 1", cfg.OutputFormat)
+	}
+	return nil
+}
+
+func WriteFile(path string, cfg Config) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("config file path is required")
 	}
 
-	return cfg, nil
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+
+	data, err := json.MarshalIndent(fileConfigFromConfig(cfg), "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode config file: %w", err)
+	}
+	data = append(data, '\n')
+
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("write config file %s: %w", path, err)
+	}
+	return nil
 }
 
 func applyFile(cfg *Config, path string) error {
@@ -122,8 +263,13 @@ func applyFile(cfg *Config, path string) error {
 		return fmt.Errorf("parse config file %s: %w", path, err)
 	}
 
-	if strings.TrimSpace(file.HomeDir) != "" {
-		cfg.HomeDir = filepath.Clean(file.HomeDir)
+	if strings.TrimSpace(file.Environment) != "" {
+		cfg.Environment = strings.ToLower(strings.TrimSpace(file.Environment))
+	}
+	if strings.TrimSpace(file.WORHome) != "" {
+		cfg.WORHome = filepath.Clean(file.WORHome)
+	} else if strings.TrimSpace(file.HomeDir) != "" {
+		cfg.WORHome = filepath.Clean(file.HomeDir)
 	}
 	if strings.TrimSpace(file.DataDir) != "" {
 		cfg.DataDir = filepath.Clean(file.DataDir)
@@ -137,8 +283,35 @@ func applyFile(cfg *Config, path string) error {
 	if file.Debug != nil {
 		cfg.Debug = *file.Debug
 	}
+	if strings.TrimSpace(file.WebServerProvider) != "" {
+		cfg.WebServerProvider = strings.ToLower(strings.TrimSpace(file.WebServerProvider))
+	}
+	if strings.TrimSpace(file.SSLProvider) != "" {
+		cfg.SSLProvider = strings.ToLower(strings.TrimSpace(file.SSLProvider))
+	}
+	if len(file.RuntimeDetections) > 0 {
+		cfg.RuntimeDetections = file.RuntimeDetections
+	}
 
 	return nil
+}
+
+func fileConfigFromConfig(cfg Config) fileConfig {
+	return fileConfig{
+		Environment:       cfg.Environment,
+		WORHome:           cfg.WORHome,
+		DataDir:           cfg.DataDir,
+		CacheDir:          cfg.CacheDir,
+		OutputFormat:      cfg.OutputFormat,
+		Debug:             boolPtr(cfg.Debug),
+		WebServerProvider: cfg.WebServerProvider,
+		SSLProvider:       cfg.SSLProvider,
+		RuntimeDetections: cfg.RuntimeDetections,
+	}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func parseBool(value string) (bool, error) {

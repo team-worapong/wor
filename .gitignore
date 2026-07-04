@@ -32,6 +32,8 @@ go.work.sum
 
 # OS metadata
 .DS_Store
+._*
+__MACOSX/
 
 # Editor/IDE
 # .idea/

@@ -22,6 +22,13 @@ func Current() System {
 	}
 }
 
+func New(goos, goarch string) System {
+	return System{
+		goos:   goos,
+		goarch: goarch,
+	}
+}
+
 func (s System) OS() string {
 	return s.goos
 }
@@ -73,6 +80,32 @@ func (s System) UserCacheDir(appName string) (string, error) {
 
 func (s System) UserDataDir(appName string) (string, error) {
 	return userDataDir(appName)
+}
+
+func (s System) UserHomeDir() (string, error) {
+	return os.UserHomeDir()
+}
+
+func (s System) DefaultSetupEnvironment() string {
+	if s.goos == "linux" {
+		return "production"
+	}
+	return "development"
+}
+
+func (s System) DefaultWORHome(environment string) (string, error) {
+	if environment == "production" {
+		if s.goos == "windows" {
+			return `C:\WOR`, nil
+		}
+		return "/opt/wor", nil
+	}
+
+	home, err := s.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "wor"), nil
 }
 
 func isSupportedOS(goos string) bool {

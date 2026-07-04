@@ -10,6 +10,7 @@ type Env map[string]string
 func EnvironmentVariables() []string {
 	return []string{
 		EnvConfig,
+		EnvEnvironment,
 		EnvHome,
 		EnvDataDir,
 		EnvCacheDir,

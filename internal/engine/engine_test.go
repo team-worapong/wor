@@ -28,8 +28,8 @@ func TestEnvironmentReportIsStructuredUseCaseData(t *testing.T) {
 	}
 
 	report := app.Environment()
-	if report.Config.HomeDir != filepath.Join(dir, "home") {
-		t.Fatalf("HomeDir = %q", report.Config.HomeDir)
+	if report.Config.WORHome != filepath.Join(dir, "home") {
+		t.Fatalf("WORHome = %q", report.Config.WORHome)
 	}
 	if !report.Config.Debug {
 		t.Fatal("Debug = false")
@@ -58,7 +58,7 @@ func TestHelpReportComesFromEngine(t *testing.T) {
 	if help.Usage != "wor <command>" {
 		t.Fatalf("Usage = %q", help.Usage)
 	}
-	if len(help.Commands) != 4 {
+	if len(help.Commands) != 7 {
 		t.Fatalf("Commands length = %d", len(help.Commands))
 	}
 }

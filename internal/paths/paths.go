@@ -2,9 +2,13 @@ package paths
 
 import (
 	"path/filepath"
-
-	"github.com/team-worapong/wor/internal/platform"
 )
+
+type Platform interface {
+	UserConfigDir(appName string) (string, error)
+	UserDataDir(appName string) (string, error)
+	UserCacheDir(appName string) (string, error)
+}
 
 type Paths struct {
 	ConfigDir  string
@@ -15,11 +19,11 @@ type Paths struct {
 }
 
 type Resolver struct {
-	system  platform.System
+	system  Platform
 	appName string
 }
 
-func NewResolver(system platform.System, appName string) Resolver {
+func NewResolver(system Platform, appName string) Resolver {
 	return Resolver{
 		system:  system,
 		appName: appName,

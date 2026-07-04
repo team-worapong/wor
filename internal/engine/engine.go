@@ -7,8 +7,11 @@ import (
 
 	"github.com/team-worapong/wor/internal/config"
 	"github.com/team-worapong/wor/internal/doctor"
-	"github.com/team-worapong/wor/internal/paths"
+	"github.com/team-worapong/wor/internal/domain"
 	"github.com/team-worapong/wor/internal/platform"
+	worRuntime "github.com/team-worapong/wor/internal/runtime"
+	"github.com/team-worapong/wor/internal/service"
+	"github.com/team-worapong/wor/internal/setup"
 	"github.com/team-worapong/wor/internal/version"
 )
 
@@ -29,12 +32,10 @@ func New(env config.Env, system platform.System, options Options) (Engine, error
 		appName = "wor"
 	}
 
-	resolvedPaths, err := paths.NewResolver(system, appName).Resolve()
-	if err != nil {
-		return Engine{}, fmt.Errorf("paths: %w", err)
-	}
-
-	cfg, err := config.NewLoader(env, resolvedPaths).Load()
+	cfg, err := config.LoadWithOptions(system, config.LoadOptions{
+		AppName: appName,
+		Env:     env,
+	})
 	if err != nil {
 		return Engine{}, fmt.Errorf("configuration: %w", err)
 	}
@@ -60,6 +61,9 @@ func (e Engine) Help() HelpReport {
 			{Name: "help", Description: "Show help"},
 			{Name: "env", Description: "Show effective environment and configuration"},
 			{Name: "doctor", Description: "Inspect local runtime prerequisites"},
+			{Name: "setup", Description: "Run the re-runnable setup wizard"},
+			{Name: "domain add", Description: "Register a domain in WOR_HOME"},
+			{Name: "service add", Description: "Create a service foundation for a registered domain"},
 		},
 	}
 }
@@ -79,6 +83,18 @@ func (e Engine) Environment() EnvironmentReport {
 
 func (e Engine) Doctor(ctx context.Context) (doctor.Report, error) {
 	return doctor.New(e.system).Run(ctx)
+}
+
+func (e Engine) Setup(ctx context.Context, request setup.Request, interactor setup.Interactor) (setup.Result, error) {
+	return setup.New(e.system, e.config, nil).Run(ctx, request, interactor)
+}
+
+func (e Engine) DomainAdd(request domain.AddRequest) (domain.Metadata, error) {
+	return domain.NewManager(e.config).Add(request)
+}
+
+func (e Engine) ServiceAdd(ctx context.Context, request service.AddRequest) (service.Metadata, error) {
+	return service.NewManager(e.config, worRuntime.NewChecker(e.system)).Add(ctx, request)
 }
 
 func (e Engine) environmentVariables() []EnvironmentVariable {
