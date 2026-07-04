@@ -168,3 +168,45 @@ func Remove(host string) error {
 	}
 	return osutil.WriteFilePrivileged(Path(), []byte(out))
 }
+
+// ListHosts returns every host currently registered in the WOR-managed
+// hosts block (sorted), for orphan detection -- it makes no claim about
+// whether a host is still referenced by any domain/service; callers
+// (e.g. `wor clean`) cross-reference against the registry themselves.
+func ListHosts() ([]string, error) {
+	data, err := os.ReadFile(Path())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	hosts, _ := parseBlockHosts(string(data))
+	return sortedKeys(hosts), nil
+}
+
+// RemoveAll strips the entire WOR-managed hosts block (every host in
+// it, in one shot), leaving everything else in the hosts file
+// untouched. Used by `wor reset`, which wipes every domain/service wor
+// knows about -- removing hosts one at a time via Remove would get the
+// same end result but is needlessly roundabout when the goal is
+// "every WOR host entry, gone".
+func RemoveAll() error {
+	data, err := os.ReadFile(Path())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	text := string(data)
+	if !strings.Contains(text, blockStart) {
+		return nil
+	}
+	out := blockRe.ReplaceAllString(text, "")
+	// Collapse 3+ consecutive newlines down to a single blank line.
+	for strings.Contains(out, "\n\n\n") {
+		out = strings.ReplaceAll(out, "\n\n\n", "\n\n")
+	}
+	return osutil.WriteFilePrivileged(Path(), []byte(out))
+}

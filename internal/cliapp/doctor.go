@@ -9,6 +9,7 @@ import (
 	"wor/internal/dbbackup"
 	"wor/internal/domainmodel"
 	"wor/internal/hostprovider"
+	"wor/internal/hostsfile"
 	"wor/internal/osutil"
 	"wor/internal/pm2"
 	"wor/internal/systemd"
@@ -354,6 +355,18 @@ func (a *App) cmdClean(args []string) error {
 			}
 		}
 	}
+
+	if hosts, err := hostsfile.ListHosts(); err == nil {
+		for _, host := range hosts {
+			if _, ok := a.Store.ResolveHost(host); ok {
+				continue
+			}
+			a.info("Removing orphan hosts file entry: %s", host)
+			if err := hostsfile.Remove(host); err != nil {
+				a.warn("could not remove hosts file entry for %s: %s (%s)", host, err, osutil.ElevationHint())
+			}
+		}
+	}
 	return nil
 }
 
@@ -370,6 +383,7 @@ func (a *App) cmdReset(args []string) error {
 		fmt.Fprintln(a.Out, "  - systemd units matching wor_*.service (Linux)")
 		fmt.Fprintln(a.Out, "  - Host configs matching wor__*.conf")
 		fmt.Fprintln(a.Out, "  - Provider default config 000_wor_default.conf")
+		fmt.Fprintln(a.Out, "  - WOR-HOSTS block entries in the system hosts file")
 		fmt.Fprintf(a.Out, "  - %s/*\n", a.Cfg.Domains)
 		fmt.Fprintf(a.Out, "  - %s/*\n", a.Cfg.Backups)
 		fmt.Fprintf(a.Out, "  - %s/*\n", a.Cfg.Logs)
@@ -408,6 +422,10 @@ func (a *App) cmdReset(args []string) error {
 			provider.CleanupWorBrokenSymlinks()
 			provider.Reload()
 		}
+	}
+
+	if err := hostsfile.RemoveAll(); err != nil {
+		a.warn("could not clear hosts file entries: %s (%s)", err, osutil.ElevationHint())
 	}
 
 	os.RemoveAll(a.Cfg.Domains)

@@ -44,6 +44,15 @@ type ServicesConfig struct {
 	Services []Service `json:"services"`
 }
 
+// ServiceRef is one service paired with the domain it belongs to, as
+// returned by Store.ListAllServices -- for commands (like `wor service
+// status`) that need a flat view across every domain without repeating
+// the ListDomains+LoadServices loop themselves.
+type ServiceRef struct {
+	Domain  string
+	Service Service
+}
+
 // Database is one registered backup profile reference under a domain.
 type Database struct {
 	Profile string `json:"profile"`

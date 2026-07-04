@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"wor/internal/domainmodel"
 	"wor/internal/osutil"
@@ -163,6 +164,80 @@ func RunCapture(args ...string) (string, error) {
 	cmd.Env = append(os.Environ(), "PM2_HOME="+Home())
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// ProcessInfo is the subset of one `pm2 jlist` entry that `wor service
+// status`-style reporting needs.
+type ProcessInfo struct {
+	Name        string
+	PID         int
+	Status      string // pm2's pm2_env.status: "online", "stopped", "errored", ...
+	Uptime      time.Duration
+	CPUPercent  float64 // pm2's own live monit.cpu reading
+	MemoryBytes int64   // pm2's own live monit.memory reading (RSS, bytes)
+}
+
+// rawJlistEntry mirrors just the `pm2 jlist` fields ProcessInfo needs;
+// the real payload has many more (versioning, env, ...) that wor has no
+// use for.
+type rawJlistEntry struct {
+	Name   string `json:"name"`
+	PID    int    `json:"pid"`
+	Pm2Env struct {
+		Status   string `json:"status"`
+		PmUptime int64  `json:"pm_uptime"` // ms since epoch: process start time
+	} `json:"pm2_env"`
+	Monit struct {
+		CPU    float64 `json:"cpu"`    // percent, as pm2 itself computes it
+		Memory int64   `json:"memory"` // RSS bytes
+	} `json:"monit"`
+}
+
+// List runs `pm2 jlist` once and returns every managed process keyed by
+// its PM2 name (see Name), so callers that need to check many services
+// at once (like `wor service status`) don't shell out to pm2 once per
+// service. Only stdout is captured (not RunCapture's combined
+// stdout+stderr) so a stray daemon-startup line on stderr can't corrupt
+// the JSON parse.
+func List() (map[string]ProcessInfo, error) {
+	if err := EnsureHome(); err != nil {
+		return nil, err
+	}
+	cmd := exec.Command("pm2", "jlist")
+	cmd.Env = append(os.Environ(), "PM2_HOME="+Home())
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("pm2 jlist: %w", err)
+	}
+	return parseJlist(out)
+}
+
+// parseJlist parses `pm2 jlist`'s JSON array into a map keyed by PM2
+// process name. Split out from List() so the parsing/uptime-calculation
+// logic can be unit tested without invoking the real pm2 binary.
+func parseJlist(data []byte) (map[string]ProcessInfo, error) {
+	var raw []rawJlistEntry
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parsing pm2 jlist output: %w", err)
+	}
+	now := time.Now()
+	result := make(map[string]ProcessInfo, len(raw))
+	for _, p := range raw {
+		info := ProcessInfo{
+			Name:        p.Name,
+			PID:         p.PID,
+			Status:      p.Pm2Env.Status,
+			CPUPercent:  p.Monit.CPU,
+			MemoryBytes: p.Monit.Memory,
+		}
+		if p.Pm2Env.PmUptime > 0 {
+			if started := time.UnixMilli(p.Pm2Env.PmUptime); now.After(started) {
+				info.Uptime = now.Sub(started)
+			}
+		}
+		result[p.Name] = info
+	}
+	return result, nil
 }
 
 // Save runs `pm2 save`, matching lib/pm2.sh pm2_save(): best-effort,

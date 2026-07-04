@@ -99,3 +99,18 @@ func RunVersion(bin string, args ...string) string {
 	}
 	return line
 }
+
+// IsTerminal reports whether f appears to be an interactive terminal,
+// as opposed to a pipe, redirect, or regular file. wor has zero
+// third-party dependencies by design (see DESIGN.md), so this
+// deliberately uses only the standard library's file-mode check rather
+// than golang.org/x/term's more precise ioctl-based one -- good enough
+// to decide whether `wor service status`/`wor host list` should color
+// their output.
+func IsTerminal(f *os.File) bool {
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}

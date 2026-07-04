@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 
 	"wor/internal/domainmodel"
 	"wor/internal/hostprovider"
@@ -201,13 +202,7 @@ func (a *App) cmdHost(args []string) error {
 		if err != nil {
 			return err
 		}
-		entries, _ := os.ReadDir(provider.SitesAvailable())
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".conf") {
-				fmt.Fprintln(a.Out, e.Name())
-			}
-		}
-		return nil
+		return a.printHostList(provider)
 	case "test":
 		provider, err := a.Provider()
 		if err != nil {
@@ -250,6 +245,119 @@ func (a *App) cmdHost(args []string) error {
 		a.usage()
 		return a.errf("unknown host action: %s", action)
 	}
+}
+
+// hostListRow is one rendered line of `wor host list`.
+type hostListRow struct {
+	host    string
+	target  string // "domain/service", or "-" if unresolvable
+	port    string
+	ssl     bool
+	enabled bool
+}
+
+// printHostList implements `wor host list`. Earlier this just printed
+// every ".conf" filename in sites-available with no other information
+// -- not even whether a site was actually enabled (symlinked into
+// sites-enabled). This instead groups by enabled/disabled (comparing
+// sites-available against sites-enabled; on macOS/Windows nginx/apache
+// use one flat directory for both, so every listed site there counts as
+// enabled) and, per site, resolves its target domain/service
+// (Store.ResolveHost), port (Store.GetServicePort, only when the
+// target's template actually uses one), and SSL state (ssl.LoadState).
+func (a *App) printHostList(provider *hostprovider.Provider) error {
+	avail := provider.SitesAvailable()
+	enabled := provider.SitesEnabled()
+
+	entries, err := os.ReadDir(avail)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintln(a.Out, "No sites found.")
+			return nil
+		}
+		return err
+	}
+
+	enabledNames := map[string]bool{}
+	sameDir := enabled == avail
+	if !sameDir {
+		if enabledEntries, err := os.ReadDir(enabled); err == nil {
+			for _, e := range enabledEntries {
+				enabledNames[e.Name()] = true
+			}
+		}
+	}
+
+	var enabledRows, disabledRows []hostListRow
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".conf") || name == provider.DefaultConfigName() {
+			continue
+		}
+		host := strings.TrimSuffix(strings.TrimPrefix(name, "wor__"), ".conf")
+
+		row := hostListRow{host: host, target: "-", port: "n/a", enabled: sameDir || enabledNames[name]}
+		if target, ok := a.Store.ResolveHost(host); ok {
+			row.target = target
+			if domain, service, err := domainmodel.ParseTarget(target); err == nil {
+				svcType := a.Store.GetServiceType(domain, service)
+				if domainmodel.TemplateRequiresPort(svcType) {
+					if p, err := a.Store.GetServicePort(domain, service); err == nil && p != 0 {
+						row.port = fmt.Sprintf(":%d", p)
+					}
+				}
+			}
+		}
+		if st, ok, _ := ssl.LoadState(a.Cfg.SSL, host); ok {
+			row.ssl = st.Enabled
+		}
+
+		if row.enabled {
+			enabledRows = append(enabledRows, row)
+		} else {
+			disabledRows = append(disabledRows, row)
+		}
+	}
+
+	if len(enabledRows) == 0 && len(disabledRows) == 0 {
+		fmt.Fprintln(a.Out, "No sites found.")
+		return nil
+	}
+
+	useColor := a.colorEnabled()
+	printGroup := func(label string, rows []hostListRow, isEnabled bool) {
+		fmt.Fprintln(a.Out, colorize(useColor, ansiPink, label))
+		tw := tabwriter.NewWriter(a.Out, 0, 4, 3, ' ', 0)
+		for _, row := range rows {
+			var dot string
+			if isEnabled {
+				dot = tag(useColor, ansiGreen, "●", "[on]")
+			} else {
+				dot = tag(useColor, ansiGray, "○", "[off]")
+			}
+			var sslTag string
+			if row.ssl {
+				sslTag = tag(useColor, ansiGreen, "ssl", "[ssl]")
+			} else {
+				sslTag = tag(useColor, ansiGray, "no-ssl", "[no-ssl]")
+			}
+			fmt.Fprintf(tw, "  %s\t%s\t-> %s\t%s\t%s\n", dot, row.host, row.target, row.port, sslTag)
+		}
+		tw.Flush()
+	}
+
+	first := true
+	if len(enabledRows) > 0 {
+		printGroup("ENABLED", enabledRows, true)
+		first = false
+	}
+	if len(disabledRows) > 0 {
+		if !first {
+			fmt.Fprintln(a.Out)
+		}
+		printGroup("DISABLED", disabledRows, false)
+	}
+	return nil
 }
 
 // hostAdd implements `wor host add`. It returns the resolved

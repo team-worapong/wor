@@ -315,6 +315,28 @@ func (s *Store) ListServiceTargets() ([]string, error) {
 	return out, nil
 }
 
+// ListAllServices returns every registered service across every domain,
+// domains sorted alphabetically and services in services.config.json
+// order within each domain. Domains whose services.config.json fails to
+// load are skipped (matching ListServiceTargets' tolerance).
+func (s *Store) ListAllServices() ([]ServiceRef, error) {
+	domains, err := s.ListDomains()
+	if err != nil {
+		return nil, err
+	}
+	var out []ServiceRef
+	for _, domain := range domains {
+		cfg, err := s.LoadServices(domain)
+		if err != nil {
+			continue
+		}
+		for _, svc := range cfg.Services {
+			out = append(out, ServiceRef{Domain: domain, Service: svc})
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) GetServiceType(domain, service string) string {
 	cfg, err := s.LoadServices(domain)
 	if err != nil {

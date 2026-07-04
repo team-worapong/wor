@@ -1,15 +1,18 @@
 package cliapp
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"text/tabwriter"
 
 	"wor/internal/domainmodel"
 	"wor/internal/hostprovider"
+	"wor/internal/hostsfile"
 	"wor/internal/osutil"
 	"wor/internal/pm2"
 	"wor/internal/servicefiles"
@@ -200,10 +203,7 @@ func (a *App) cmdService(args []string) error {
 	}
 	action := args[0]
 	if action == "status" {
-		// Lists PM2-managed processes only; systemd-managed go/python
-		// services are inspected individually via `wor service logs`
-		// or `systemctl status wor_<domain>_<service>`.
-		return pm2.Run("status")
+		return a.cmdServiceStatus()
 	}
 	if len(args) < 2 {
 		a.usage()
@@ -318,6 +318,9 @@ func (a *App) cmdService(args []string) error {
 				for _, h := range hosts {
 					provider.RemoveHostFiles(h)
 					a.Store.RemoveHostFromServices(h)
+					if err := hostsfile.Remove(h); err != nil {
+						a.warn("could not remove hosts file entry for %s: %s (%s)", h, err, osutil.ElevationHint())
+					}
 					a.ok("Host removed: %s", h)
 				}
 				provider.Reload()
@@ -461,4 +464,223 @@ func portInUse(port int) bool {
 	}
 	ln.Close()
 	return false
+}
+
+// statusRow is one rendered line of `wor service status`.
+type statusRow struct {
+	target string // "domain/service"
+	state  string
+	port   string
+	extra  string // "pid N" and/or uptime, space-joined
+	known  bool   // whether live process state was actually queried (pm2/systemd groups)
+	ok     bool   // true = running/active; only meaningful when known
+
+	// procName/cpuStr/memStr are only set for pm2/systemd rows (php and
+	// static have no supervised process to name or measure), and render
+	// as an extra indented line under the row -- see cmdServiceStatus.
+	procName string // "wor_<domain>_<service>", the pm2/systemd process name
+	cpuStr   string // e.g. "0.4%", or "-" if not available
+	memStr   string // e.g. "132mb", or "-" if not available
+}
+
+// statusGroup is one process-provider section of `wor service status`
+// (PM2, systemd, PHP-FPM, static), rendered in that order regardless of
+// which domains/services happen to populate them.
+type statusGroup struct {
+	key   string
+	label string
+	rows  []statusRow
+}
+
+// cmdServiceStatus implements `wor service status`. Earlier this simply
+// ran `pm2 status`, which only ever showed node services -- go/python
+// (systemd-managed on Linux) and php/static services were invisible.
+// This instead enumerates every enabled service across every domain
+// (Store.ListAllServices) and groups it by the process provider that
+// actually manages it (domainmodel.ProcessProviderFor), querying each
+// provider's live state: pm2 jlist once for every node service, plus a
+// single batched systemctl sampling pass (systemd.GetInfoBatch) for
+// every go/python service, so `wor service status` pays pm2/systemd's
+// query cost once regardless of how many services it reports on. php
+// (PHP-FPM, assumed already running) and static (no process) have
+// nothing to query, so they're listed with an n/a state instead of
+// being silently omitted.
+func (a *App) cmdServiceStatus() error {
+	refs, err := a.Store.ListAllServices()
+	if err != nil {
+		return err
+	}
+
+	order := []string{"pm2", "systemd", "php", "static"}
+	labels := map[string]string{
+		"pm2":     "PM2 (node)",
+		"systemd": "SYSTEMD (go/python)",
+		"php":     "PHP-FPM (php)",
+		"static":  "STATIC (no process)",
+	}
+	groups := map[string]*statusGroup{}
+	for _, key := range order {
+		groups[key] = &statusGroup{key: key, label: labels[key]}
+	}
+
+	needPM2 := false
+	var systemdRefs []systemd.Ref
+	for _, ref := range refs {
+		if !ref.Service.Enabled {
+			continue
+		}
+		switch domainmodel.ProcessProviderFor(ref.Service.Type) {
+		case "pm2":
+			needPM2 = true
+		case "systemd":
+			systemdRefs = append(systemdRefs, systemd.Ref{Domain: ref.Domain, Service: ref.Service.Name})
+		}
+	}
+
+	var pm2Procs map[string]pm2.ProcessInfo
+	if needPM2 {
+		if procs, err := pm2.List(); err != nil {
+			a.warn("pm2 status unavailable: %s", err)
+		} else {
+			pm2Procs = procs
+		}
+	}
+	var systemdInfo map[systemd.Ref]systemd.Info
+	if len(systemdRefs) > 0 {
+		systemdInfo = systemd.GetInfoBatch(systemdRefs)
+	}
+
+	for _, ref := range refs {
+		svc := ref.Service
+		if !svc.Enabled {
+			continue
+		}
+		target := ref.Domain + "/" + svc.Name
+		portStr := "-"
+		if domainmodel.TemplateRequiresPort(svc.Type) {
+			if p, err := a.Store.GetServicePort(ref.Domain, svc.Name); err == nil && p != 0 {
+				portStr = fmt.Sprintf(":%d", p)
+			}
+		}
+
+		switch domainmodel.ProcessProviderFor(svc.Type) {
+		case "pm2":
+			row := statusRow{target: target, port: portStr, procName: pm2.Name(ref.Domain, svc.Name)}
+			if info, ok := pm2Procs[row.procName]; ok {
+				row.known = true
+				row.state = info.Status
+				row.ok = info.Status == "online"
+				row.cpuStr = formatPercent(info.CPUPercent)
+				row.memStr = formatBytes(info.MemoryBytes)
+				if info.PID != 0 {
+					row.extra = fmt.Sprintf("pid %d", info.PID)
+				}
+				if u := formatUptime(info.Uptime); u != "" {
+					if row.extra != "" {
+						row.extra += "  "
+					}
+					row.extra += u
+				}
+			} else {
+				row.state = "not started"
+				row.cpuStr, row.memStr = "-", "-"
+			}
+			groups["pm2"].rows = append(groups["pm2"].rows, row)
+
+		case "systemd":
+			// The systemd unit name convention ("wor_<domain>_<service>")
+			// is identical to pm2's, just with a ".service" suffix pm2.Name
+			// doesn't have -- reuse it rather than duplicating the format.
+			row := statusRow{target: target, port: portStr, procName: pm2.Name(ref.Domain, svc.Name), cpuStr: "-", memStr: "-"}
+			if info, ok := systemdInfo[systemd.Ref{Domain: ref.Domain, Service: svc.Name}]; ok {
+				row.known = true
+				row.state = info.State
+				row.ok = info.Active
+				if info.PID != 0 {
+					row.extra = fmt.Sprintf("pid %d", info.PID)
+				}
+				if info.CPUKnown {
+					row.cpuStr = formatPercent(info.CPUPercent)
+				}
+				if info.MemKnown {
+					row.memStr = formatBytes(info.MemoryBytes)
+				}
+			} else {
+				row.state = "unknown"
+			}
+			groups["systemd"].rows = append(groups["systemd"].rows, row)
+
+		default:
+			if domainmodel.TemplateRequiresPHP(svc.Type) {
+				groups["php"].rows = append(groups["php"].rows, statusRow{
+					target: target, state: "assumed running (fpm)", port: "n/a",
+				})
+			} else {
+				groups["static"].rows = append(groups["static"].rows, statusRow{
+					target: target, state: "served by web server", port: "n/a",
+				})
+			}
+		}
+	}
+
+	any := false
+	for _, key := range order {
+		if len(groups[key].rows) > 0 {
+			any = true
+			break
+		}
+	}
+	if !any {
+		fmt.Fprintln(a.Out, "No enabled services found.")
+		return nil
+	}
+
+	useColor := a.colorEnabled()
+	first := true
+	for _, key := range order {
+		g := groups[key]
+		if len(g.rows) == 0 {
+			continue
+		}
+		if !first {
+			fmt.Fprintln(a.Out)
+		}
+		first = false
+		fmt.Fprintln(a.Out, colorize(useColor, ansiPink, g.label))
+
+		// Render the primary rows through a tabwriter first so their
+		// columns align across the whole group, capturing the aligned
+		// result instead of writing straight to a.Out -- that way each
+		// row's proc-name/cpu/mem sub-line (which isn't part of the
+		// tabwriter's column grid) can be spliced in right after its
+		// row without disturbing the alignment pass.
+		var buf bytes.Buffer
+		tw := tabwriter.NewWriter(&buf, 0, 4, 3, ' ', 0)
+		for _, row := range g.rows {
+			var glyph string
+			switch {
+			case !row.known:
+				glyph = tag(useColor, ansiGray, "·", "[--]")
+			case row.ok:
+				glyph = tag(useColor, ansiGreen, "●", "[ok]")
+			default:
+				glyph = tag(useColor, ansiRed, "●", "[fail]")
+			}
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", glyph, row.target, row.state, row.port, row.extra)
+		}
+		tw.Flush()
+		lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+
+		for i, row := range g.rows {
+			if i < len(lines) {
+				fmt.Fprintln(a.Out, lines[i])
+			}
+			if row.procName == "" {
+				continue
+			}
+			sub := fmt.Sprintf("%-28s cpu %-7s mem %s", row.procName, row.cpuStr, row.memStr)
+			fmt.Fprintf(a.Out, "      %s\n", colorize(useColor, ansiGray, sub))
+		}
+	}
+	return nil
 }
