@@ -521,6 +521,11 @@ func (a *App) hostRemove(host string, fl flags) error {
 	if err := hostsfile.Remove(host); err != nil {
 		a.warn("could not remove hosts file entry for %s: %s (%s)", host, err, osutil.ElevationHint())
 	}
+	if _, hasState, _ := ssl.LoadState(a.Cfg.SSL, host); hasState {
+		if err := ssl.RemoveHostDir(a.Cfg.SSL, host); err != nil {
+			a.warn("could not remove SSL files for %s: %s", host, err)
+		}
+	}
 	if err := provider.Reload(); err != nil {
 		return err
 	}

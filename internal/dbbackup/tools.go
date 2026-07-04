@@ -61,6 +61,41 @@ func toolCandidates(id string) (names []string, extra []string) {
 			return []string{"sqlite3.exe", "sqlite3"}, []string{filepath.Join(choco, "sqlite3.exe")}
 		}
 		return []string{"sqlite3"}, []string{"/usr/bin/sqlite3", "/usr/local/bin/sqlite3", "/opt/homebrew/bin/sqlite3"}
+	// The remaining ids are used only by `wor doctor`'s Database
+	// checklist, which wants MySQL/MariaDB/Redis reported as distinct
+	// rows -- unlike ClientBin/DumpBin above, which deliberately treat
+	// "mysql-client" as either MySQL or MariaDB since backup/restore
+	// logic doesn't care which one is actually running.
+	case "mysql-client-only":
+		if osutil.IsWindows() {
+			return []string{"mysql.exe", "mysql"}, []string{filepath.Join(pf, "MySQL", "MySQL Server 8.0", "bin", "mysql.exe"), filepath.Join(choco, "mysql.exe")}
+		}
+		return []string{"mysql"}, []string{"/usr/bin/mysql", "/usr/sbin/mysql", "/usr/local/bin/mysql", "/usr/local/mysql/bin/mysql", "/opt/homebrew/bin/mysql"}
+	case "mysql-server":
+		if osutil.IsWindows() {
+			return []string{"mysqld.exe", "mysqld"}, []string{filepath.Join(pf, "MySQL", "MySQL Server 8.0", "bin", "mysqld.exe")}
+		}
+		return []string{"mysqld"}, []string{"/usr/sbin/mysqld", "/usr/bin/mysqld", "/usr/local/bin/mysqld", "/usr/local/mysql/bin/mysqld", "/opt/homebrew/bin/mysqld", "/opt/homebrew/opt/mysql/bin/mysqld"}
+	case "mariadb-client":
+		if osutil.IsWindows() {
+			return []string{"mariadb.exe", "mariadb"}, []string{filepath.Join(choco, "mariadb.exe")}
+		}
+		return []string{"mariadb"}, []string{"/usr/bin/mariadb", "/usr/local/bin/mariadb", "/opt/homebrew/bin/mariadb"}
+	case "mariadb-server":
+		if osutil.IsWindows() {
+			return []string{"mariadbd.exe", "mariadbd"}, []string{filepath.Join(choco, "mariadbd.exe")}
+		}
+		return []string{"mariadbd"}, []string{"/usr/sbin/mariadbd", "/usr/bin/mariadbd", "/usr/local/bin/mariadbd", "/opt/homebrew/bin/mariadbd", "/opt/homebrew/opt/mariadb/bin/mariadbd"}
+	case "redis-server":
+		if osutil.IsWindows() {
+			return []string{"redis-server.exe", "redis-server"}, []string{filepath.Join(choco, "redis-server.exe")}
+		}
+		return []string{"redis-server"}, []string{"/usr/bin/redis-server", "/usr/local/bin/redis-server", "/opt/homebrew/bin/redis-server"}
+	case "redis-client":
+		if osutil.IsWindows() {
+			return []string{"redis-cli.exe", "redis-cli"}, []string{filepath.Join(choco, "redis-cli.exe")}
+		}
+		return []string{"redis-cli"}, []string{"/usr/bin/redis-cli", "/usr/local/bin/redis-cli", "/opt/homebrew/bin/redis-cli"}
 	default:
 		return nil, nil
 	}
@@ -118,6 +153,32 @@ func DumpBin(engine string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// MySQLClientBin returns the MySQL client binary, strictly -- unlike
+// ClientBin("mysql"), this does not also match a "mariadb" binary, so
+// `wor doctor` can report MySQL and MariaDB as separate rows.
+func MySQLClientBin() (string, bool) { return findTool("mysql-client-only") }
+
+// MySQLServerBin returns the mysqld server binary, if installed.
+func MySQLServerBin() (string, bool) { return findTool("mysql-server") }
+
+// MariaDBBin returns the mariadbd server binary if installed, else the
+// mariadb client binary -- either indicates MariaDB is present.
+func MariaDBBin() (string, bool) {
+	if bin, ok := findTool("mariadb-server"); ok {
+		return bin, true
+	}
+	return findTool("mariadb-client")
+}
+
+// RedisBin returns the redis-server binary if installed, else
+// redis-cli -- either indicates Redis is present.
+func RedisBin() (string, bool) {
+	if bin, ok := findTool("redis-server"); ok {
+		return bin, true
+	}
+	return findTool("redis-client")
 }
 
 // DetectEngine best-effort guesses an installed engine when a profile

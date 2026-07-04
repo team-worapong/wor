@@ -12,11 +12,12 @@ import (
 // grouped output. Kept to a small, semantic set (group header, ok,
 // fail, muted) rather than a general-purpose palette.
 const (
-	ansiReset = "\x1b[0m"
-	ansiGreen = "\x1b[32m"
-	ansiRed   = "\x1b[31m"
-	ansiGray  = "\x1b[90m"
-	ansiPink  = "\x1b[35m"
+	ansiReset  = "\x1b[0m"
+	ansiGreen  = "\x1b[32m"
+	ansiYellow = "\x1b[33m"
+	ansiRed    = "\x1b[31m"
+	ansiGray   = "\x1b[90m"
+	ansiPink   = "\x1b[35m"
 )
 
 // colorEnabled reports whether status-style output should use ANSI
