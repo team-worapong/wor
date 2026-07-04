@@ -63,7 +63,11 @@ func (e Engine) Help() HelpReport {
 			{Name: "doctor", Description: "Inspect local runtime prerequisites"},
 			{Name: "setup", Description: "Run the re-runnable setup wizard"},
 			{Name: "domain add", Description: "Register a domain in WOR_HOME"},
+			{Name: "domain list", Description: "List managed domains"},
+			{Name: "domain show", Description: "Show managed domain details"},
 			{Name: "service add", Description: "Create a service foundation for a registered domain"},
+			{Name: "service list", Description: "List managed services"},
+			{Name: "service show", Description: "Show managed service details"},
 		},
 	}
 }
@@ -93,8 +97,54 @@ func (e Engine) DomainAdd(request domain.AddRequest) (domain.Metadata, error) {
 	return domain.NewManager(e.config).Add(request)
 }
 
+func (e Engine) DomainList() ([]domain.Metadata, error) {
+	return domain.NewCatalog(e.config).ListDomains()
+}
+
+func (e Engine) DomainShow(domainName string) (DomainReport, error) {
+	catalog := domain.NewCatalog(e.config)
+	metadata, err := catalog.GetDomainByName(domainName)
+	if err != nil {
+		return DomainReport{}, err
+	}
+	services, err := service.NewManager(e.config, nil).ListServicesByDomain(metadata.DomainName)
+	if err != nil {
+		return DomainReport{}, err
+	}
+	return DomainReport{
+		Domain:   metadata,
+		Services: services,
+	}, nil
+}
+
 func (e Engine) ServiceAdd(ctx context.Context, request service.AddRequest) (service.Metadata, error) {
 	return service.NewManager(e.config, worRuntime.NewChecker(e.system)).Add(ctx, request)
+}
+
+func (e Engine) ServiceList(request service.ListRequest) ([]service.Metadata, error) {
+	manager := service.NewManager(e.config, nil)
+	if strings.TrimSpace(request.Domain) != "" {
+		return manager.ListServicesByDomain(request.Domain)
+	}
+	return manager.ListServices()
+}
+
+func (e Engine) ServiceShow(fqdn string) (ServiceReport, error) {
+	manager := service.NewManager(e.config, nil)
+	metadata, err := manager.GetServiceByFQDN(fqdn)
+	if err != nil {
+		return ServiceReport{}, err
+	}
+	template, err := service.TemplateForService(metadata)
+	if err != nil {
+		return ServiceReport{}, err
+	}
+	return ServiceReport{
+		Service:             metadata,
+		Template:            template,
+		RuntimeRequirements: service.RuntimeRequirements(template),
+		ProcessRequirements: service.ProcessRequirements(template),
+	}, nil
 }
 
 func (e Engine) environmentVariables() []EnvironmentVariable {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +25,10 @@ type AddRequest struct {
 	FQDN             string
 	TemplateName     string
 	ApplicationRoute string
+}
+
+type ListRequest struct {
+	Domain string
 }
 
 type Metadata struct {
@@ -56,6 +61,63 @@ func NewManager(cfg config.Config, checker RuntimeChecker) Manager {
 		checker: checker,
 		now:     time.Now,
 	}
+}
+
+func (m Manager) ListServices() ([]Metadata, error) {
+	domains, err := m.catalog.ListDomains()
+	if err != nil {
+		return nil, err
+	}
+
+	services := make([]Metadata, 0)
+	for _, metadata := range domains {
+		items, err := readServicesInDomain(metadata)
+		if err != nil {
+			return nil, err
+		}
+		services = append(services, items...)
+	}
+	sortServicesByFQDN(services)
+	return services, nil
+}
+
+func (m Manager) ListServicesByDomain(domainName string) ([]Metadata, error) {
+	metadata, err := m.catalog.GetDomainByName(domainName)
+	if err != nil {
+		return nil, err
+	}
+	services, err := readServicesInDomain(metadata)
+	if err != nil {
+		return nil, err
+	}
+	sortServicesByFQDN(services)
+	return services, nil
+}
+
+func (m Manager) GetServiceByFQDN(fqdn string) (Metadata, error) {
+	fqdn, _, err := domain.Normalize(fqdn)
+	if err != nil {
+		return Metadata{}, err
+	}
+
+	services, err := m.ListServices()
+	if err != nil {
+		return Metadata{}, err
+	}
+	for _, metadata := range services {
+		if metadata.FQDN == fqdn {
+			return metadata, nil
+		}
+	}
+	return Metadata{}, fmt.Errorf("service %q not found", fqdn)
+}
+
+func TemplateForService(metadata Metadata) (Template, error) {
+	template, ok := GetTemplate(metadata.ServiceTemplate)
+	if !ok {
+		return Template{}, fmt.Errorf("service %q references unknown template %q", metadata.FQDN, metadata.ServiceTemplate)
+	}
+	return template, nil
 }
 
 func (m Manager) Add(ctx context.Context, request AddRequest) (Metadata, error) {
@@ -280,6 +342,22 @@ func inspectServiceMetadata(path string) error {
 	return nil
 }
 
+func ReadMetadata(path string) (Metadata, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Metadata{}, fmt.Errorf("read service metadata %s: %w", path, err)
+	}
+
+	var metadata Metadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return Metadata{}, fmt.Errorf("parse service metadata %s: %w", path, err)
+	}
+	if strings.TrimSpace(metadata.FQDN) == "" || strings.TrimSpace(metadata.ServiceTemplate) == "" {
+		return Metadata{}, fmt.Errorf("service metadata %s is incomplete", path)
+	}
+	return metadata, nil
+}
+
 func writeServiceMetadata(path string, metadata Metadata) error {
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
@@ -290,4 +368,33 @@ func writeServiceMetadata(path string, metadata Metadata) error {
 		return fmt.Errorf("write service metadata: %w", err)
 	}
 	return nil
+}
+
+func readServicesInDomain(metadata domain.Metadata) ([]Metadata, error) {
+	entries, err := os.ReadDir(metadata.DomainPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("domain path for %q does not exist: %w", metadata.DomainName, err)
+		}
+		return nil, fmt.Errorf("read services for domain %q: %w", metadata.DomainName, err)
+	}
+
+	services := make([]Metadata, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		serviceMetadata, err := ReadMetadata(filepath.Join(metadata.DomainPath, entry.Name(), MetadataFileName))
+		if err != nil {
+			return nil, err
+		}
+		services = append(services, serviceMetadata)
+	}
+	return services, nil
+}
+
+func sortServicesByFQDN(services []Metadata) {
+	sort.Slice(services, func(i, j int) bool {
+		return services[i].FQDN < services[j].FQDN
+	})
 }

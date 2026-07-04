@@ -2,6 +2,8 @@ package engine
 
 import (
 	"github.com/team-worapong/wor/internal/config"
+	"github.com/team-worapong/wor/internal/domain"
+	"github.com/team-worapong/wor/internal/service"
 	"github.com/team-worapong/wor/internal/version"
 )
 
@@ -57,4 +59,16 @@ type EnvironmentVariable struct {
 	Name  string
 	Value string
 	Set   bool
+}
+
+type DomainReport struct {
+	Domain   domain.Metadata
+	Services []service.Metadata
+}
+
+type ServiceReport struct {
+	Service             service.Metadata
+	Template            service.Template
+	RuntimeRequirements []string
+	ProcessRequirements []string
 }

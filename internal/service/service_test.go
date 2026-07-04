@@ -151,6 +151,95 @@ func TestAddServiceUsesLongestMatchingDomain(t *testing.T) {
 	}
 }
 
+func TestListServicesSortedByFQDN(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t)
+	addDomain(t, cfg, "example.com")
+	manager := NewManager(cfg, fakeRuntimeChecker{})
+	for _, fqdn := range []string{"z.example.com", "a.example.com", "api.example.com"} {
+		if _, err := manager.Add(context.Background(), AddRequest{FQDN: fqdn}); err != nil {
+			t.Fatalf("add service %q: %v", fqdn, err)
+		}
+	}
+
+	items, err := manager.ListServices()
+	if err != nil {
+		t.Fatalf("list services: %v", err)
+	}
+	got := serviceNames(items)
+	want := []string{"a.example.com", "api.example.com", "z.example.com"}
+	if !sameStrings(got, want) {
+		t.Fatalf("services = %#v", got)
+	}
+}
+
+func TestListServicesByDomain(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t)
+	addDomain(t, cfg, "example.com")
+	addDomain(t, cfg, "example.co.th")
+	manager := NewManager(cfg, fakeRuntimeChecker{})
+	if _, err := manager.Add(context.Background(), AddRequest{FQDN: "app.example.com"}); err != nil {
+		t.Fatalf("add service: %v", err)
+	}
+	if _, err := manager.Add(context.Background(), AddRequest{FQDN: "app.example.co.th"}); err != nil {
+		t.Fatalf("add service: %v", err)
+	}
+
+	items, err := manager.ListServicesByDomain("example.co.th")
+	if err != nil {
+		t.Fatalf("list services by domain: %v", err)
+	}
+	got := serviceNames(items)
+	want := []string{"app.example.co.th"}
+	if !sameStrings(got, want) {
+		t.Fatalf("services = %#v", got)
+	}
+}
+
+func TestGetServiceByFQDN(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t)
+	addDomain(t, cfg, "example.com")
+	manager := NewManager(cfg, fakeRuntimeChecker{})
+	if _, err := manager.Add(context.Background(), AddRequest{FQDN: "app.example.com"}); err != nil {
+		t.Fatalf("add service: %v", err)
+	}
+
+	metadata, err := manager.GetServiceByFQDN("app.example.com")
+	if err != nil {
+		t.Fatalf("get service: %v", err)
+	}
+	if metadata.FQDN != "app.example.com" {
+		t.Fatalf("FQDN = %q", metadata.FQDN)
+	}
+}
+
+func TestListServicesReturnsMetadataError(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t)
+	addDomain(t, cfg, "example.com")
+	badPath := filepath.Join(cfg.WORHome, "domains", "com-example", "bad")
+	if err := os.MkdirAll(badPath, 0o755); err != nil {
+		t.Fatalf("create bad service dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(badPath, MetadataFileName), []byte("{not-json\n"), 0o600); err != nil {
+		t.Fatalf("write bad metadata: %v", err)
+	}
+
+	_, err := NewManager(cfg, fakeRuntimeChecker{}).ListServices()
+	if err == nil {
+		t.Fatal("expected metadata error")
+	}
+	if !strings.Contains(err.Error(), "parse service metadata") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestAddServiceRequiresDomainCatalogMatch(t *testing.T) {
 	t.Parallel()
 
@@ -317,4 +406,24 @@ func okRuntime(name, command string) worRuntime.CheckResult {
 		Status:      worRuntime.StatusOK,
 		Requirement: worRuntime.RequirementRequired,
 	}
+}
+
+func serviceNames(items []Metadata) []string {
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		names = append(names, item.FQDN)
+	}
+	return names
+}
+
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }

@@ -58,7 +58,7 @@ func TestHelpReportComesFromEngine(t *testing.T) {
 	if help.Usage != "wor <command>" {
 		t.Fatalf("Usage = %q", help.Usage)
 	}
-	if len(help.Commands) != 7 {
+	if len(help.Commands) != 11 {
 		t.Fatalf("Commands length = %d", len(help.Commands))
 	}
 }

@@ -6,11 +6,9 @@ import (
 	"strings"
 
 	"github.com/team-worapong/wor/internal/doctor"
-	"github.com/team-worapong/wor/internal/domain"
 	"github.com/team-worapong/wor/internal/engine"
 	"github.com/team-worapong/wor/internal/output"
 	worRuntime "github.com/team-worapong/wor/internal/runtime"
-	"github.com/team-worapong/wor/internal/service"
 	"github.com/team-worapong/wor/internal/setup"
 )
 
@@ -96,43 +94,6 @@ func renderDoctor(renderer *output.Renderer, report doctor.Report) {
 	}
 
 	renderer.Success("doctor completed")
-}
-
-func renderDomainAdded(renderer *output.Renderer, metadata domain.Metadata) {
-	if metadata.Existing {
-		renderer.Warning("domain already exists")
-	} else {
-		renderer.Success("domain added")
-	}
-	renderer.Table(
-		[]string{"Key", "Value"},
-		[][]string{
-			{"Domain ID", metadata.DomainID},
-			{"Domain name", metadata.DomainName},
-			{"Domain path", metadata.DomainPath},
-			{"Created at", metadata.CreatedAt},
-		},
-	)
-}
-
-func renderServiceAdded(renderer *output.Renderer, metadata service.Metadata) {
-	renderer.Success("service added")
-	rows := [][]string{
-		{"Service ID", metadata.ServiceID},
-		{"Domain ID", metadata.DomainID},
-		{"Domain name", metadata.DomainName},
-		{"FQDN", metadata.FQDN},
-		{"Template", metadata.ServiceTemplate},
-	}
-	if strings.TrimSpace(metadata.ApplicationRoute) != "" {
-		rows = append(rows, []string{"Application route", metadata.ApplicationRoute})
-	}
-	rows = append(rows,
-		[]string{"Public path", metadata.PublicPath},
-		[]string{"Service path", metadata.ServicePath},
-		[]string{"Created at", metadata.CreatedAt},
-	)
-	renderer.Table([]string{"Key", "Value"}, rows)
 }
 
 func doctorRows(results []worRuntime.CheckResult) [][]string {

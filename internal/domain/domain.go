@@ -163,6 +163,10 @@ func NewCatalog(cfg config.Config) Catalog {
 }
 
 func (c Catalog) List() ([]Metadata, error) {
+	return c.ListDomains()
+}
+
+func (c Catalog) ListDomains() ([]Metadata, error) {
 	entries, err := os.ReadDir(c.domainsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -184,14 +188,27 @@ func (c Catalog) List() ([]Metadata, error) {
 	}
 
 	sort.Slice(domains, func(i, j int) bool {
-		leftLabels := labelCount(domains[i].DomainName)
-		rightLabels := labelCount(domains[j].DomainName)
-		if leftLabels == rightLabels {
-			return domains[i].DomainName < domains[j].DomainName
-		}
-		return leftLabels > rightLabels
+		return domains[i].DomainName < domains[j].DomainName
 	})
 	return domains, nil
+}
+
+func (c Catalog) GetDomainByName(domainName string) (Metadata, error) {
+	domainName, _, err := Normalize(domainName)
+	if err != nil {
+		return Metadata{}, err
+	}
+
+	domains, err := c.ListDomains()
+	if err != nil {
+		return Metadata{}, err
+	}
+	for _, metadata := range domains {
+		if metadata.DomainName == domainName {
+			return metadata, nil
+		}
+	}
+	return Metadata{}, fmt.Errorf("domain %q not found", domainName)
 }
 
 func (c Catalog) FindLongestMatch(fqdn string) (Metadata, bool, error) {
@@ -204,6 +221,14 @@ func (c Catalog) FindLongestMatch(fqdn string) (Metadata, bool, error) {
 	if err != nil {
 		return Metadata{}, false, err
 	}
+	sort.Slice(domains, func(i, j int) bool {
+		leftLabels := labelCount(domains[i].DomainName)
+		rightLabels := labelCount(domains[j].DomainName)
+		if leftLabels == rightLabels {
+			return domains[i].DomainName < domains[j].DomainName
+		}
+		return leftLabels > rightLabels
+	})
 	for _, metadata := range domains {
 		if fqdn == metadata.DomainName || strings.HasSuffix(fqdn, "."+metadata.DomainName) {
 			return metadata, true, nil
