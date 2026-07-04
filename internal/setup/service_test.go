@@ -244,7 +244,38 @@ func TestMissingOptionalProviderDoesNotFailSetup(t *testing.T) {
 	if len(interactor.warnings) == 0 {
 		t.Fatal("expected warning for missing nginx")
 	}
-	if interactor.warnings[0] != "Nginx is not installed. Please choose another provider or skip." {
+	if interactor.warnings[0] != "Nginx is missing. Choose another provider or skip." {
+		t.Fatalf("warning = %q", interactor.warnings[0])
+	}
+}
+
+func TestMissingSSLProviderDoesNotProceedSilently(t *testing.T) {
+	t.Parallel()
+
+	fs := &fakeFileSystem{}
+	interactor := &fakeInteractor{
+		selects: []string{
+			EnvironmentDevelopment,
+			WebServerSkip,
+			SSLProviderLetsEncrypt,
+			SSLProviderNone,
+		},
+		inputs: []string{filepath.Join(t.TempDir(), "wor-home")},
+	}
+	service := testService(fs)
+
+	result, err := service.Run(context.Background(), Request{DryRun: true}, interactor)
+	if err != nil {
+		t.Fatalf("run setup: %v", err)
+	}
+
+	if result.Summary.SSLProvider != SSLProviderNone {
+		t.Fatalf("SSLProvider = %q", result.Summary.SSLProvider)
+	}
+	if len(interactor.warnings) == 0 {
+		t.Fatal("expected warning for missing certbot")
+	}
+	if interactor.warnings[0] != "certbot is missing. Choose another provider or skip." {
 		t.Fatalf("warning = %q", interactor.warnings[0])
 	}
 }

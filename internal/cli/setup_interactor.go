@@ -12,10 +12,10 @@ import (
 )
 
 type terminalInteractor struct {
-	reader                 *bufio.Reader
-	renderer               *output.Renderer
-	webServerProviderTitle string
-	webServerDetections    []setup.Detection
+	reader              *bufio.Reader
+	renderer            *output.Renderer
+	webServerDetections []setup.Detection
+	sslDetections       []setup.Detection
 }
 
 func newTerminalInteractor(stdin io.Reader, renderer *output.Renderer) *terminalInteractor {
@@ -29,7 +29,20 @@ func (i *terminalInteractor) Select(prompt string, options []setup.Option, defau
 	for {
 		if isWebServerProviderPrompt(prompt) {
 			i.renderWebServerProviderChoices(options, defaultValue)
-			answer, _, err := i.readAnswer(selectPrompt(prompt, defaultOptionIndex(options, defaultValue)))
+			answer, _, err := i.readAnswer(choiceListPrompt(options, defaultValue))
+			if err != nil {
+				return "", err
+			}
+			if value, ok := selectAnswerValue(answer, options, defaultValue); ok {
+				return value, nil
+			}
+			i.Warning("invalid selection")
+			continue
+		}
+
+		if isSSLProviderPrompt(prompt) {
+			i.renderSSLProviderChoices(options, defaultValue)
+			answer, _, err := i.readAnswer(choiceListPrompt(options, defaultValue))
 			if err != nil {
 				return "", err
 			}
@@ -106,8 +119,11 @@ func (i *terminalInteractor) Confirm(prompt string, defaultYes bool) (bool, erro
 
 func (i *terminalInteractor) ShowDetections(title string, detections []setup.Detection) {
 	if isWebServerProviderTitle(title) {
-		i.webServerProviderTitle = title
 		i.webServerDetections = detections
+		return
+	}
+	if isSSLProviderTitle(title) {
+		i.sslDetections = detections
 		return
 	}
 
@@ -170,14 +186,6 @@ func defaultPrompt(index int) string {
 	return fmt.Sprintf("Select [%d]:", index)
 }
 
-func selectPrompt(prompt string, index int) string {
-	prompt = strings.TrimSpace(strings.TrimSuffix(prompt, ":"))
-	if index <= 0 {
-		return prompt + ":"
-	}
-	return fmt.Sprintf("%s [%d]:", prompt, index)
-}
-
 func defaultOptionIndex(options []setup.Option, defaultValue string) int {
 	for index, option := range options {
 		if option.Value == defaultValue {
@@ -213,35 +221,94 @@ func selectAnswerValue(answer string, options []setup.Option, defaultValue strin
 	return "", false
 }
 
-func (i *terminalInteractor) renderWebServerProviderChoices(options []setup.Option, defaultValue string) {
-	title := i.webServerProviderTitle
-	if title == "" {
-		title = "Detected Web Server Providers:"
+func choiceListPrompt(options []setup.Option, defaultValue string) string {
+	for _, option := range options {
+		if option.Value == defaultValue {
+			return fmt.Sprintf("Select [%s]:", option.Label)
+		}
 	}
+	return "Select:"
+}
 
-	i.renderer.Text(title)
-	for index, option := range options {
+func (i *terminalInteractor) renderWebServerProviderChoices(options []setup.Option, defaultValue string) {
+	rows := make([]choiceListRow, 0, len(options)+1)
+	for _, option := range options {
 		if option.Value == setup.WebServerSkip {
 			continue
 		}
 		detection := webServerProviderDetection(i.webServerDetections, option.Value)
-		i.renderer.Text("%d) %s %-7s %s", index+1, detectionIcon(detection), option.Label, detectionChoiceStatus(detection))
+		rows = append(rows, choiceListRow{
+			Label:    option.Label,
+			Status:   providerChoiceStatus(detection),
+			Selected: option.Value == defaultValue,
+		})
 	}
 	for _, detection := range i.webServerDetections {
 		if detection.Name == "IIS" && !detection.Supported {
-			i.renderer.Text("-  %s %-7s %s", detectionIcon(detection), "IIS", detectionChoiceStatus(detection))
+			rows = append(rows, choiceListRow{
+				Label:  "IIS",
+				Status: providerChoiceStatus(detection),
+			})
 		}
 	}
-	for index, option := range options {
+	for _, option := range options {
 		if option.Value != setup.WebServerSkip {
 			continue
 		}
-		status := "default"
-		if option.Value != defaultValue {
-			status = ""
-		}
-		i.renderer.Text("%d) - %-7s %s", index+1, option.Label, strings.TrimSpace(status))
+		rows = append(rows, choiceListRow{
+			Label:    option.Label,
+			Selected: option.Value == defaultValue,
+		})
 	}
+
+	i.renderChoiceList("Select Web Server Provider", rows)
+}
+
+func (i *terminalInteractor) renderSSLProviderChoices(options []setup.Option, defaultValue string) {
+	rows := make([]choiceListRow, 0, len(options))
+	for _, option := range options {
+		rows = append(rows, choiceListRow{
+			Label:    option.Label,
+			Status:   sslProviderChoiceStatus(option, i.sslDetections),
+			Selected: option.Value == defaultValue,
+		})
+	}
+
+	i.renderChoiceList("Select SSL Provider", rows)
+}
+
+type choiceListRow struct {
+	Label    string
+	Status   string
+	Selected bool
+}
+
+func (i *terminalInteractor) renderChoiceList(title string, rows []choiceListRow) {
+	i.renderer.Text(strings.TrimSpace(strings.TrimSuffix(title, ":")))
+	i.renderer.Text("")
+
+	width := choiceListLabelWidth(rows)
+	for _, row := range rows {
+		pointer := " "
+		if row.Selected {
+			pointer = "❯"
+		}
+		if strings.TrimSpace(row.Status) == "" {
+			i.renderer.Text("%s %s", pointer, row.Label)
+			continue
+		}
+		i.renderer.Text("%s %-*s %s", pointer, width, row.Label, row.Status)
+	}
+}
+
+func choiceListLabelWidth(rows []choiceListRow) int {
+	width := 0
+	for _, row := range rows {
+		if len(row.Label) > width {
+			width = len(row.Label)
+		}
+	}
+	return width
 }
 
 func (i *terminalInteractor) renderDetectionList(title string, detections []setup.Detection) {

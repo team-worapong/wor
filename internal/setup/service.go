@@ -116,9 +116,9 @@ func (s Service) selectWebServerProvider(interactor Interactor, detections []Det
 
 	for {
 		choice, err := interactor.Select("Select Web Server Provider:", []Option{
-			{Value: WebServerNginx, Label: "nginx"},
-			{Value: WebServerApache, Label: "apache"},
-			{Value: WebServerSkip, Label: "skip"},
+			{Value: WebServerNginx, Label: "Nginx"},
+			{Value: WebServerApache, Label: "Apache"},
+			{Value: WebServerSkip, Label: "Skip"},
 		}, defaultValue)
 		if err != nil {
 			return "", err
@@ -127,7 +127,7 @@ func (s Service) selectWebServerProvider(interactor Interactor, detections []Det
 			return choice, nil
 		}
 
-		interactor.Warning(fmt.Sprintf("%s is not installed. Please choose another provider or skip.", providerDisplayName(choice)))
+		interactor.Warning(fmt.Sprintf("%s is missing. Choose another provider or skip.", providerDisplayName(choice)))
 		next, err := interactor.Select("Choose next action:", []Option{
 			{Value: "retry", Label: "choose again"},
 			{Value: WebServerSkip, Label: "skip"},
@@ -142,6 +142,8 @@ func (s Service) selectWebServerProvider(interactor Interactor, detections []Det
 }
 
 func (s Service) selectSSLProvider(interactor Interactor, certbot Detection, existingConfig bool) (string, error) {
+	interactor.ShowDetections("Detected SSL Providers:", []Detection{certbot})
+
 	defaultValue := SSLProviderNone
 	if existingConfig && validSSLProvider(s.config.SSLProvider) {
 		defaultValue = s.config.SSLProvider
@@ -149,9 +151,9 @@ func (s Service) selectSSLProvider(interactor Interactor, certbot Detection, exi
 
 	for {
 		choice, err := interactor.Select("Select SSL Provider:", []Option{
-			{Value: SSLProviderSelfSigned, Label: "self-signed"},
-			{Value: SSLProviderLetsEncrypt, Label: "letsencrypt"},
-			{Value: SSLProviderNone, Label: "none/skip", Aliases: []string{"skip"}},
+			{Value: SSLProviderLetsEncrypt, Label: "Let's Encrypt", Aliases: []string{"lets encrypt", "letsencrypt"}},
+			{Value: SSLProviderSelfSigned, Label: "Self Signed"},
+			{Value: SSLProviderNone, Label: "None", Aliases: []string{"skip", "none/skip"}},
 		}, defaultValue)
 		if err != nil {
 			return "", err
@@ -160,7 +162,7 @@ func (s Service) selectSSLProvider(interactor Interactor, certbot Detection, exi
 			return choice, nil
 		}
 
-		interactor.Warning("certbot was not found. WOR will not install certbot.")
+		interactor.Warning("certbot is missing. Choose another provider or skip.")
 		next, err := interactor.Select("Choose next action:", []Option{
 			{Value: "retry", Label: "choose again"},
 			{Value: SSLProviderNone, Label: "skip"},

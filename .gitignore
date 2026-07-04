@@ -9,8 +9,14 @@
 *.dylib
 /wor
 /bin/
+
+# Build artifacts
 /dist/
 dist/
+
+# Local backups
+/backups/
+backups/
 
 # Test binary, built with `go test -c`
 *.test

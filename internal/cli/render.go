@@ -168,6 +168,14 @@ func isWebServerProviderPrompt(prompt string) bool {
 	return strings.EqualFold(strings.TrimSpace(prompt), "Select Web Server Provider:")
 }
 
+func isSSLProviderTitle(title string) bool {
+	return strings.Contains(strings.ToLower(title), "ssl providers")
+}
+
+func isSSLProviderPrompt(prompt string) bool {
+	return strings.EqualFold(strings.TrimSpace(prompt), "Select SSL Provider:")
+}
+
 func webServerProviderDetection(detections []setup.Detection, provider string) setup.Detection {
 	switch provider {
 	case setup.WebServerNginx:
@@ -198,9 +206,9 @@ func detectionIcon(detection setup.Detection) string {
 	return "✕"
 }
 
-func detectionChoiceStatus(detection setup.Detection) string {
+func providerChoiceStatus(detection setup.Detection) string {
 	if !detection.Supported {
-		return "not supported"
+		return "(not supported)"
 	}
 	if detection.Found {
 		if version := compactVersion(detection.Name, detection.Version); version != "" {
@@ -208,7 +216,25 @@ func detectionChoiceStatus(detection setup.Detection) string {
 		}
 		return "found"
 	}
-	return "not found"
+	return "(not found)"
+}
+
+func sslProviderChoiceStatus(option setup.Option, detections []setup.Detection) string {
+	if option.Value != setup.SSLProviderLetsEncrypt {
+		return ""
+	}
+
+	certbot := detectionByName(detections, "Certbot")
+	if !certbot.Supported {
+		return "certbot (not supported)"
+	}
+	if !certbot.Found {
+		return "missing: certbot"
+	}
+	if version := compactVersion(certbot.Name, certbot.Version); version != "" {
+		return "certbot " + version
+	}
+	return "certbot found"
 }
 
 func compactDetectionStatus(detection setup.Detection) string {

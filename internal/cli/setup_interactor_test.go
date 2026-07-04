@@ -14,7 +14,7 @@ func TestWebServerProviderChoicesRenderFoundMissingAndUnsupported(t *testing.T) 
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	interactor := newTerminalInteractor(strings.NewReader("3\n"), output.New(&stdout, &stderr, output.FormatText))
+	interactor := newTerminalInteractor(strings.NewReader("\n"), output.New(&stdout, &stderr, output.FormatText))
 
 	interactor.ShowDetections("Detected Web Server Providers:", []setup.Detection{
 		{
@@ -41,9 +41,9 @@ func TestWebServerProviderChoicesRenderFoundMissingAndUnsupported(t *testing.T) 
 	})
 
 	choice, err := interactor.Select("Select Web Server Provider:", []setup.Option{
-		{Value: setup.WebServerNginx, Label: "nginx"},
-		{Value: setup.WebServerApache, Label: "apache"},
-		{Value: setup.WebServerSkip, Label: "skip"},
+		{Value: setup.WebServerNginx, Label: "Nginx"},
+		{Value: setup.WebServerApache, Label: "Apache"},
+		{Value: setup.WebServerSkip, Label: "Skip"},
 	}, setup.WebServerSkip)
 	if err != nil {
 		t.Fatalf("select provider: %v", err)
@@ -54,20 +54,69 @@ func TestWebServerProviderChoicesRenderFoundMissingAndUnsupported(t *testing.T) 
 
 	got := stdout.String()
 	for _, want := range []string{
-		"Detected Web Server Providers:",
-		"1) ✓ nginx   1.31.2",
-		"2) ✕ apache  not found",
-		"-  - IIS     not supported",
-		"3) - skip    default",
-		"Select Web Server Provider [3]:",
+		"Select Web Server Provider",
+		"Nginx  1.31.2",
+		"Apache (not found)",
+		"IIS    (not supported)",
+		"❯ Skip",
+		"Select [Skip]:",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output missing %q:\n%s", want, got)
 		}
 	}
-	for _, unwanted := range []string{"/usr/sbin/nginx", "/usr/sbin/apache2"} {
+	for _, unwanted := range []string{"Detected Web Server Providers:", "/usr/sbin/nginx", "/usr/sbin/apache2"} {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("wizard output should not include executable path %q:\n%s", unwanted, got)
+		}
+	}
+}
+
+func TestSSLProviderChoicesRenderCertbotVersionAndNoPath(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	interactor := newTerminalInteractor(strings.NewReader("\n"), output.New(&stdout, &stderr, output.FormatText))
+
+	interactor.ShowDetections("Detected SSL Providers:", []setup.Detection{
+		{
+			Name:      "Certbot",
+			Found:     true,
+			Supported: true,
+			Path:      "/opt/homebrew/bin/certbot",
+			Version:   "certbot 4.2.0",
+			Status:    "ok",
+		},
+	})
+
+	choice, err := interactor.Select("Select SSL Provider:", []setup.Option{
+		{Value: setup.SSLProviderLetsEncrypt, Label: "Let's Encrypt"},
+		{Value: setup.SSLProviderSelfSigned, Label: "Self Signed"},
+		{Value: setup.SSLProviderNone, Label: "None", Aliases: []string{"skip"}},
+	}, setup.SSLProviderNone)
+	if err != nil {
+		t.Fatalf("select provider: %v", err)
+	}
+	if choice != setup.SSLProviderNone {
+		t.Fatalf("choice = %q", choice)
+	}
+
+	got := stdout.String()
+	for _, want := range []string{
+		"Select SSL Provider",
+		"Let's Encrypt certbot 4.2.0",
+		"Self Signed",
+		"❯ None",
+		"Select [None]:",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"Detected SSL Providers:", "/opt/homebrew/bin/certbot"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("wizard output should not include %q:\n%s", unwanted, got)
 		}
 	}
 }
