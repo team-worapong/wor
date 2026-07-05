@@ -256,7 +256,7 @@ func (a *App) cmdCreate(args []string) error {
 	}
 	fmt.Fprintln(a.Out)
 	fmt.Fprintln(a.Out, "Next:")
-	fmt.Fprintf(a.Out, "  wor source clone %s/%s --git=<url> --replace\n", domain, service)
+	fmt.Fprintf(a.Out, "  wor source clone %s/%s <git-url>\n", domain, service)
 	fmt.Fprintf(a.Out, "  wor deploy %s\n", host)
 	return nil
 }

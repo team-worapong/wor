@@ -12,6 +12,7 @@ import (
 
 	"wor/internal/domainmodel"
 	"wor/internal/gitignore"
+	"wor/internal/osutil"
 )
 
 // sourceBackup zips a domain or service source tree into
@@ -279,6 +280,9 @@ func (a *App) cmdSource(args []string) error {
 		return nil
 
 	case "pull":
+		if !osutil.Exists("git") {
+			return a.errf("git is not installed (required for wor source pull)")
+		}
 		domain, service, err := domainmodel.ParseTarget(target)
 		if err != nil {
 			return err
@@ -296,10 +300,13 @@ func (a *App) cmdSource(args []string) error {
 		return cmd.Run()
 
 	case "clone":
-		git := fl.Get("git", "")
-		if git == "" {
-			return a.errf("--git is required")
+		if !osutil.Exists("git") {
+			return a.errf("git is not installed (required for wor source clone)")
 		}
+		if len(rest) == 0 || rest[0] == "" {
+			return a.errf("git-url is required: wor source clone %s <git-url>", target)
+		}
+		git := rest[0]
 		domain, service, err := domainmodel.ParseTarget(target)
 		if err != nil {
 			return err
