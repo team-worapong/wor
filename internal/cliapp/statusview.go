@@ -18,6 +18,19 @@ const (
 	ansiRed    = "\x1b[31m"
 	ansiGray   = "\x1b[90m"
 	ansiPink   = "\x1b[35m"
+
+	// ansiDim is the SGR "faint" attribute (2), applied on top of the
+	// terminal's own default foreground rather than a fixed "bright
+	// black" color code (ansiGray). ansiGray renders low-contrast to the
+	// point of being hard to read on some terminal themes -- bright
+	// black is defined independently per-theme and isn't guaranteed to
+	// sit at a readable distance from the background. Dimming the
+	// default foreground instead lets the terminal's own theme decide
+	// what "muted" looks like, which stays legible across both light and
+	// dark schemes. Used for secondary/sub-line text (e.g. the
+	// proc-name/cpu/mem line under a pm2/systemd row) that should read
+	// as de-emphasized, not as a distinct gray hue.
+	ansiDim = "\x1b[2m"
 )
 
 // colorEnabled reports whether status-style output should use ANSI

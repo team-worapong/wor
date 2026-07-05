@@ -1,6 +1,7 @@
-# wor (Go rewrite)
+# WOR Runtime Manager
 
-Cross-platform (Linux / macOS / Windows) rewrite of `wor-cli`, an
+WOR is a cross-platform Runtime Manager for web applications.
+Cross-platform (Linux / macOS / Windows), an
 Infrastructure & Operations tool for managing Node.js/PHP services,
 static sites, nginx/apache host configuration, SSL certificates, and
 database backups under one filesystem convention.
@@ -13,20 +14,12 @@ to make cross-platform support real rather than aspirational -- see
 
 ## Status
 
-This code was written and reviewed without access to a Go toolchain or
-internet connectivity in the authoring environment, so it has **not
-been compiled or run yet**. Every file was written carefully and
-cross-checked by hand (import usage, function signatures, struct
-fields), but a project this size will likely have a handful of small
-compile errors on the first build. Please run:
-
-```bash
-cd wor-go
-go build ./...
-```
-
-and fix/report anything that comes up -- none of it should be
-architectural, just the kind of typo `go build` catches in seconds.
+`go build ./...`, `go vet ./...`, and `go test ./...` all pass, and the
+cross-compile targets listed below build cleanly. Most of this project
+was written and reviewed without access to a Go toolchain in the
+authoring environment; the first real build/test/vet pass on the
+user's machine has since happened and the handful of issues it turned
+up have been fixed.
 
 ## Build
 
@@ -57,7 +50,7 @@ wor setup
 wor doctor
 wor env
 wor clean
-wor reset [--yes]
+wor reset
 wor create [host]
     (interactive only -- prompts for service type, domain id
     override, domain type, and hosts entry; accepts no other flags)
@@ -79,7 +72,8 @@ wor database add <domain>/<profile> [--label=]
 wor database remove <domain>/<profile>
 wor database backup <domain>/<profile>[/database]
 
-wor source clone <domain[/service]> --git=<url> [--replace]
+wor source clone <domain> <git-url>
+wor source clone <domain>/<service> <git-url>
 wor source pull <domain[/service]>
 wor source backup <domain[/service]>
 

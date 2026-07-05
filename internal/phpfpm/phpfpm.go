@@ -20,12 +20,14 @@ package phpfpm
 import (
 	"crypto/sha1"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"wor/internal/osutil"
 )
@@ -170,19 +172,51 @@ func detectHomebrewVersions() []Version {
 // num -- never blindly assuming "php" == this version, which would
 // silently point a service at the wrong PHP binary on a host with
 // several versions installed side by side.
+//
+// A further wrinkle found via a live bug report: Homebrew can make
+// *both* "opt/php@<num>" and "opt/php" resolve (as symlinks) to the
+// exact same Cellar keg when only the plain "php" formula is
+// installed -- the "php@<num>" opt path existing is not proof a
+// formula literally named "php@<num>" is what's actually registered
+// with `brew services`/launchd. Preferring the versioned path
+// unconditionally in that case previously produced a reloadUnit
+// (e.g. "php@8.5") that doesn't match brew's real service name
+// ("php"), which made IsRunning/Start/reload act on a name brew has
+// never heard of. When both candidates resolve, this now asks `brew
+// services list` (the actual ground truth for the registered name)
+// which one is real, rather than guessing from path existence alone.
 func resolveHomebrewPHPBinary(prefix, num string) (bin, reloadUnit string) {
-	versioned := filepath.Join(prefix, "opt", "php@"+num, "sbin", "php-fpm")
-	if b := osutil.FindBinary("php-fpm"+num, versioned); b != "" {
-		return b, "php@" + num
-	}
+	versionedBin := osutil.FindBinary("php-fpm"+num, filepath.Join(prefix, "opt", "php@"+num, "sbin", "php-fpm"))
+
 	plain := filepath.Join(prefix, "opt", "php", "sbin", "php-fpm")
+	plainBin := ""
 	if osutil.IsExecutableFile(plain) && phpFPMVersionMatches(plain, num) {
-		return plain, "php"
+		plainBin = plain
 	}
-	// Nothing resolvable on disk -- keep the old guessed name/path so
-	// error messages still point somewhere plausible, even though
-	// nothing will actually be found running under it.
-	return "", "php@" + num
+
+	switch {
+	case versionedBin != "" && plainBin != "":
+		if brewServiceExists("php@" + num) {
+			return versionedBin, "php@" + num
+		}
+		if brewServiceExists("php") {
+			return plainBin, "php"
+		}
+		// Neither name has ever been registered with brew services
+		// (e.g. this master has never been started that way) -- fall
+		// back to the versioned name, matching this function's
+		// previous unconditional preference.
+		return versionedBin, "php@" + num
+	case versionedBin != "":
+		return versionedBin, "php@" + num
+	case plainBin != "":
+		return plainBin, "php"
+	default:
+		// Nothing resolvable on disk -- keep the old guessed name/path so
+		// error messages still point somewhere plausible, even though
+		// nothing will actually be found running under it.
+		return "", "php@" + num
+	}
 }
 
 // phpFPMVersionMatches reports whether bin's own "-v" output claims to
@@ -352,12 +386,53 @@ func IsRunning(v Version) bool {
 // a process running this version's own php-fpm binary already exists
 // (`pgrep -f <FPMBin>`). Best-effort -- if pgrep isn't available, this
 // just returns false, same as any other undetectable state.
+//
+// Known weak spot (found via a live false-negative report, not just
+// theoretical): php-fpm rewrites its own process title via setproctitle
+// once it starts (`ps`/`pgrep -f` then sees "php-fpm: master process
+// (/path/to/php-fpm.conf)", not the original exec path) -- so this
+// match can fail against a perfectly healthy master on any OS, not just
+// as a Homebrew-naming quirk. IsRunning's callers should keep that in
+// mind: a false "not running" here is possible even when both
+// IsRunning's checks are implemented correctly. PoolAlive (below) is
+// the safer signal for "is this specific pool usable" precisely because
+// it sidesteps process/service-name matching entirely.
 func fpmProcessRunning(v Version) bool {
 	if v.FPMBin == "" {
 		return false
 	}
 	out, err := exec.Command("pgrep", "-f", v.FPMBin).Output()
 	return err == nil && strings.TrimSpace(string(out)) != ""
+}
+
+// poolDialTimeout bounds how long PoolAlive waits to connect to a
+// pool's socket -- long enough to tolerate a master briefly busy under
+// load, short enough that `wor service status` doesn't visibly hang per
+// php row.
+const poolDialTimeout = 300 * time.Millisecond
+
+// PoolAlive reports whether domain/service's own pool socket is
+// currently accepting connections. This is a direct, name-independent
+// signal of whether THIS pool specifically is up -- unlike IsRunning,
+// which checks the shared php-fpm MASTER's process-manager state (the
+// right question for `wor run`'s "should I start the master" decision,
+// but the wrong one for a per-pool status row): IsRunning's
+// service-name guess can be wrong (see resolveHomebrewPHPBinary's
+// php-vs-php@X.Y ambiguity), and its pgrep fallback can't reliably
+// match a live master at all once setproctitle has overwritten its
+// command line (see fpmProcessRunning). Dialing the pool's own socket
+// avoids both problems entirely. Always false on Windows, matching
+// every other function in this package.
+func PoolAlive(v Version, domain, service string) bool {
+	if osutil.IsWindows() {
+		return false
+	}
+	conn, err := net.DialTimeout("unix", SocketPath(v, domain, service), poolDialTimeout)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 // Start starts v's php-fpm master service if it isn't already running.
@@ -390,23 +465,42 @@ func Start(v Version) error {
 	return nil
 }
 
+// brewServiceRow returns `brew services list`'s fields for name ("Name
+// Status User File"), or nil if name has no row at all -- shared lookup
+// behind brewServiceStarted (is it running) and brewServiceExists (is
+// this name registered with brew at all, regardless of status).
+func brewServiceRow(name string) []string {
+	out, err := exec.Command("brew", "services", "list").Output()
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 1 && fields[0] == name {
+			return fields
+		}
+	}
+	return nil
+}
+
 // brewServiceStarted reports whether Homebrew considers name's service
 // started (duplicated from hostprovider's identical helper -- this
 // project's leaf packages deliberately don't import each other for
 // small shared utilities like this, see e.g. reload()'s own brew-restart
 // logic already being separately implemented per package).
 func brewServiceStarted(name string) bool {
-	out, err := exec.Command("brew", "services", "list").Output()
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[0] == name {
-			return fields[1] == "started"
-		}
-	}
-	return false
+	row := brewServiceRow(name)
+	return len(row) >= 2 && row[1] == "started"
+}
+
+// brewServiceExists reports whether name appears as a row in `brew
+// services list` at all, regardless of its started/stopped status.
+// Used by resolveHomebrewPHPBinary to tell which of "php"/"php@X.Y" is
+// actually the registered brew service name when both happen to resolve
+// as valid on-disk paths -- opt/ symlink existence alone can't
+// disambiguate that, but brew's own service list is ground truth.
+func brewServiceExists(name string) bool {
+	return brewServiceRow(name) != nil
 }
 
 // reload asks the running php-fpm master for v to pick up the pool.d

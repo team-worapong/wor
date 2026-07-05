@@ -810,12 +810,54 @@ func (a *App) cmdServiceStatus() error {
 
 		default:
 			if domainmodel.TemplateRequiresPHP(svc.Type) {
-				groups["php"].rows = append(groups["php"].rows, statusRow{
-					target: target, state: "assumed running (fpm)", port: "n/a",
-				})
+				row := statusRow{target: target, port: "n/a"}
+				if svc.PHPVersion != "" {
+					// Dedicated per-service pool -- check this pool's
+					// own socket (phpfpm.PoolAlive) rather than
+					// phpfpm.IsRunning: IsRunning answers "is the shared
+					// master service up", which depends on correctly
+					// guessing its Homebrew/systemd service name and on
+					// pgrep matching its binary path -- both of which
+					// can (and, per a live report, did) return a false
+					// "not running" for a pool that was actually up and
+					// serving traffic the whole time. PoolAlive
+					// sidesteps both by dialing the pool's socket
+					// directly.
+					if v, ok := phpfpm.ResolveVersion(svc.PHPVersion); ok {
+						row.known = true
+						row.ok = phpfpm.PoolAlive(v, ref.Domain, svc.Name)
+						if row.ok {
+							row.state = fmt.Sprintf("running (php %s pool)", svc.PHPVersion)
+						} else {
+							row.state = fmt.Sprintf("not running (php %s pool)", svc.PHPVersion)
+						}
+					} else {
+						row.known = true
+						row.ok = false
+						row.state = fmt.Sprintf("php %s no longer detected on this host", svc.PHPVersion)
+					}
+				} else {
+					// Legacy host-wide PHP_FPM_ENDPOINT: wor never
+					// manages this master's lifecycle and has no
+					// per-service way to probe it, so there's nothing
+					// to actually check -- "assumed" is the honest
+					// answer, not "unknown". Rendered ok (green) rather
+					// than the gray "unknown" dot, since that dot means
+					// "we expected a supervised process and got no
+					// answer back", which isn't this case.
+					row.known = true
+					row.ok = true
+					row.state = "assumed running (fpm)"
+				}
+				groups["php"].rows = append(groups["php"].rows, row)
 			} else {
+				// static has no supervised process at all -- nothing
+				// here can fail, so it's always shown ok. Whether the
+				// web server itself is up is `wor host list`'s job, not
+				// this row's.
 				groups["static"].rows = append(groups["static"].rows, statusRow{
 					target: target, state: "served by web server", port: "n/a",
+					known: true, ok: true,
 				})
 			}
 		}
@@ -877,7 +919,7 @@ func (a *App) cmdServiceStatus() error {
 				continue
 			}
 			sub := fmt.Sprintf("%-28s cpu %-7s mem %s", row.procName, row.cpuStr, row.memStr)
-			fmt.Fprintf(a.Out, "      %s\n", colorize(useColor, ansiGray, sub))
+			fmt.Fprintf(a.Out, "      %s\n", colorize(useColor, ansiDim, sub))
 		}
 	}
 	return nil

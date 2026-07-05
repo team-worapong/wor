@@ -86,29 +86,25 @@ func ParseTarget(target string) (domain, service string, err error) {
 	return domain, service, nil
 }
 
-// coTLDSuffixes are second-level ccTLD suffixes that need three labels
-// to form a registrable base (matches host_base_parts()/domain_id_from_base()
-// in lib/hosts.sh).
-var coTLDSuffixes = map[string]bool{
-	"co.th": true, "ac.th": true, "go.th": true, "or.th": true,
-	"co.uk": true, "com.au": true, "co.jp": true,
-}
-
 // HostBaseParts splits a FQDN into its "service" label (subdomain
 // prefix, or "www" if none) and its registrable base domain. Port of
-// lib/hosts.sh host_base_parts().
+// lib/hosts.sh host_base_parts(), now backed by the same embedded
+// public-suffix-list algorithm IsApexDomain uses (via
+// RegistrableLabelCount) instead of its own separately-maintained
+// hardcoded ccTLD list (co.th/ac.th/go.th/or.th/co.uk/com.au/co.jp).
+// Behavior for that same TLD set is unchanged; what this removes is
+// the risk of the two lists silently drifting apart -- see
+// RegistrableLabelCount's doc comment for why today's practically
+// supported set doesn't actually grow from this change alone.
 func HostBaseParts(host string) (service, base string, err error) {
 	parts := strings.Split(host, ".")
 	n := len(parts)
 	if n < 2 {
 		return "", "", fmt.Errorf("cannot resolve domain from host: %s", host)
 	}
-	baseLabels := 2
-	if n >= 3 {
-		last2 := parts[n-2] + "." + parts[n-1]
-		if coTLDSuffixes[last2] {
-			baseLabels = 3
-		}
+	baseLabels := RegistrableLabelCount(host)
+	if baseLabels > n {
+		baseLabels = n
 	}
 	service = "www"
 	if n > baseLabels {
@@ -120,22 +116,25 @@ func HostBaseParts(host string) (service, base string, err error) {
 }
 
 // DomainIDFromBase derives the WOR domain id from a registrable base
-// domain, e.g. "example.com" -> "com-example",
-// "example.co.th" -> "th-co-example". Port of
-// lib/hosts.sh domain_id_from_base().
+// domain by reversing its labels and joining them with "-", e.g.
+// "example.com" -> "com-example", "example.co.th" -> "th-co-example".
+// Works uniformly for any number of labels HostBaseParts hands it (no
+// more special-casing a fixed set of 3-label ccTLD suffixes), since
+// HostBaseParts now derives the correct label count itself via the PSL.
 func DomainIDFromBase(base string) (string, error) {
 	parts := strings.Split(base, ".")
 	n := len(parts)
-	if n >= 3 {
-		last2 := parts[n-2] + "." + parts[n-1]
-		if coTLDSuffixes[last2] {
-			return parts[n-1] + "-" + parts[n-2] + "-" + parts[n-3], nil
-		}
-	}
-	if n < 2 || parts[0] == "" || parts[1] == "" {
+	if n < 2 {
 		return "", fmt.Errorf("cannot resolve base domain from: %s", base)
 	}
-	return parts[1] + "-" + parts[0], nil
+	reversed := make([]string, n)
+	for i, p := range parts {
+		if p == "" {
+			return "", fmt.Errorf("cannot resolve base domain from: %s", base)
+		}
+		reversed[n-1-i] = p
+	}
+	return strings.Join(reversed, "-"), nil
 }
 
 // HostToDomainService resolves a FQDN into (domain, service), honoring

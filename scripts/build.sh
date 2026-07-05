@@ -63,7 +63,7 @@ normalize_os() {
 #checking
 checking() {
   echo "==> Checking"
-  go fmt ./...
+  gofmt -l .
   go vet ./...
   
   echo "==> Running tests"

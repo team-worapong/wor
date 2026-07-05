@@ -292,28 +292,26 @@ func (a *App) cmdClean(args []string) error {
 	return nil
 }
 
+// cmdReset always requires typed "RESET" confirmation -- there is
+// deliberately no --yes/-y bypass. This wipes every WOR-managed
+// pm2/systemd process, host config, hosts-file entry, and the entire
+// domains/backups/logs trees; a flag that skips the prompt is too easy
+// to have sitting in a script or shell history and fire unattended for
+// something this destructive.
 func (a *App) cmdReset(args []string) error {
-	yes := false
-	for _, arg := range args {
-		if arg == "--yes" || arg == "-y" {
-			yes = true
-		}
-	}
-	if !yes {
-		fmt.Fprintln(a.Out, "WARNING: WOR reset will remove:")
-		fmt.Fprintln(a.Out, "  - PM2 processes starting with wor_")
-		fmt.Fprintln(a.Out, "  - systemd units matching wor_*.service (Linux)")
-		fmt.Fprintln(a.Out, "  - Host configs matching wor__*.conf")
-		fmt.Fprintln(a.Out, "  - Provider default config 000_wor_default.conf")
-		fmt.Fprintln(a.Out, "  - WOR-HOSTS block entries in the system hosts file")
-		fmt.Fprintf(a.Out, "  - %s/*\n", a.Cfg.Domains)
-		fmt.Fprintf(a.Out, "  - %s/*\n", a.Cfg.Backups)
-		fmt.Fprintf(a.Out, "  - %s/*\n", a.Cfg.Logs)
-		fmt.Fprintln(a.Out)
-		fmt.Fprintln(a.Out, "It will NOT remove non-WOR host configs.")
-		if !a.requireTyped("Type RESET to continue: ", "RESET") {
-			return a.errf("cancelled")
-		}
+	fmt.Fprintln(a.Out, "WARNING: The following WOR resources will be removed:")
+	fmt.Fprintln(a.Out, "  - PM2 processes starting with wor_")
+	fmt.Fprintln(a.Out, "  - systemd units matching wor_*.service (Linux)")
+	fmt.Fprintln(a.Out, "  - Host configs matching wor__*.conf")
+	fmt.Fprintln(a.Out, "  - Provider default config 000_wor_default.conf")
+	fmt.Fprintln(a.Out, "  - WOR-HOSTS block entries in the system hosts file")
+	fmt.Fprintf(a.Out, "  - %s/*\n", a.Cfg.Domains)
+	fmt.Fprintf(a.Out, "  - %s/*\n", a.Cfg.Backups)
+	fmt.Fprintf(a.Out, "  - %s/*\n", a.Cfg.Logs)
+	fmt.Fprintln(a.Out)
+	fmt.Fprintln(a.Out, "It will NOT remove non-WOR host configs.")
+	if !a.requireTyped("Type RESET to continue: ", "RESET") {
+		return a.errf("cancelled")
 	}
 
 	if osutil.Exists("pm2") {

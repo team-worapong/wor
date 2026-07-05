@@ -12,7 +12,7 @@ Usage:
   wor doctor
   wor env
   wor clean
-  wor reset [--yes]
+  wor reset
   wor create [host]
       (interactive only -- no other flags accepted; prompts for
       service type, domain id override, domain type, and hosts entry)

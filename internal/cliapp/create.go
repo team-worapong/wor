@@ -102,6 +102,16 @@ func (a *App) cmdCreate(args []string) error {
 	suggestedDomain := domain
 	override := a.promptDefault(fmt.Sprintf("Domain id [%s] (Enter to accept, or type an override)", suggestedDomain), suggestedDomain)
 	if override != suggestedDomain {
+		// Validate the override the moment it's typed -- HostToDomainService
+		// passes a non-empty override straight through as the domain id with
+		// no validation of its own, so without this check a bad override
+		// (e.g. "example.com", not a slug) would sail through template
+		// selection, runtime preflight, port allocation, and the host
+		// wizard, only to fail at the very end when cmdDomain's own
+		// RequireSlug check finally runs.
+		if err := domainmodel.RequireSlug(override); err != nil {
+			return err
+		}
 		domain, service, err = domainmodel.HostToDomainService(host, override)
 		if err != nil {
 			return err

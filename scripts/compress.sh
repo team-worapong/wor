@@ -27,7 +27,7 @@ echo "==> Packaging"
 echo "    Root   : $ROOT_DIR"
 
 echo "==> Checking"
-go fmt ./...
+gofmt -l .
 go vet ./...
 
 echo "==> Running tests"
