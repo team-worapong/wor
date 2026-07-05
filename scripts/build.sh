@@ -60,6 +60,15 @@ normalize_os() {
   esac
 }
 
+#checking
+checking() {
+  echo "==> Checking"
+  go fmt ./...
+  go vet ./...
+  echo "==> Running tests"
+  go test ./...
+}
+
 # build_one GOOS_VALUE OS_LABEL GOARCH_VALUE
 build_one() {
   local goos_value="$1" os_label="$2" goarch_value="$3"
@@ -93,11 +102,7 @@ case "${1:-}" in
       exit 1
     fi
 
-    echo "==> Checking"
-    go fmt ./...
-    go vet ./...
-    echo "==> Running tests"
-    go test ./...
+    checking
 
     # Matches the GOOS/GOARCH matrix documented in README.md.
     build_one linux linux amd64
@@ -131,10 +136,6 @@ if ! read -r GOOS_VALUE OS_LABEL < <(normalize_os "$GOOS_ARG"); then
   exit 1
 fi
 
-echo "==> Checking"
-go fmt ./...
-go vet ./...
-echo "==> Running tests"
-go test ./...
+checking
 
 build_one "$GOOS_VALUE" "$OS_LABEL" "$GOARCH_VALUE"
