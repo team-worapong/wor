@@ -20,13 +20,23 @@ Usage:
   wor domain add <domain-id>
   wor domain remove <domain-id>
 
-  wor service add <domain>/<service> [--host=<host>] [--port=<port>] [--entry=<entry-point>] [--service-type=static|node|go|python|php]
+  wor service add <domain>/<service> [--host=<host>] [--port=<port>] [--entry=<entry-point>] [--service-type=static|node|go|python|php] [--php-version=<version>] [--no-php-pool]
+      (php services get their own dedicated php-fpm pool automatically
+      when exactly one PHP-FPM version is detected on this host;
+      --php-version= picks one when several are detected, --no-php-pool
+      forces the legacy shared PHP_FPM_ENDPOINT instead)
   wor service remove <domain>/<service> [--cascade] [--yes]
   wor service start <domain>/<service>
   wor service stop <domain>/<service>
   wor service restart <domain>/<service>
   wor service status
   wor service logs <domain>/<service> [--lines=100]
+
+  wor run
+      (ensures every enabled service -- and the runtimes/web server it
+      needs -- is up, starting anything that isn't; offers to register
+      "pm2 startup" if it was never set up. Skips a failed service and
+      keeps going; ends with a started/failed summary line.)
 
   wor host add <host> [--target=<domain>/<service>] [--server=nginx|apache] [--replace] [--domain-type=local|public] [--add-hosts|--no-hosts]
   wor host remove <host> [--yes]

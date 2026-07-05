@@ -14,6 +14,7 @@ import (
 	"wor/internal/hostprovider"
 	"wor/internal/hostsfile"
 	"wor/internal/osutil"
+	"wor/internal/phpfpm"
 	"wor/internal/pm2"
 	"wor/internal/servicefiles"
 	"wor/internal/systemd"
@@ -130,12 +131,144 @@ func runtimeVersionLabel(template string) string {
 	}
 }
 
-// requirePHPRuntime mirrors require_php_runtime().
+// requirePHPRuntime mirrors require_php_runtime(), now version-aware: it
+// succeeds if either a per-service PHP-FPM version can be detected (see
+// phpfpm.DetectVersions) or the legacy host-wide PHP_FPM_ENDPOINT
+// resolves. New php services prefer a per-service pool when one is
+// available (see resolvePHPVersion), but this check never hard-requires
+// it, so hosts that haven't set up a per-version pool.d layout (or are
+// on Windows) keep working exactly as before.
 func (a *App) requirePHPRuntime() error {
+	if len(phpfpm.DetectVersions()) > 0 {
+		return nil
+	}
 	if _, ok := hostprovider.PHPFPMEndpoint(a.Cfg); ok {
 		return nil
 	}
-	return a.errf("template requires PHP-FPM runtime. Configure PHP_FPM_ENDPOINT in %s/host.env", a.Cfg.Configs)
+	return a.errf("template requires PHP-FPM runtime. Install a per-version PHP-FPM (/etc/php/<version>/fpm on Linux, php@<version> via Homebrew on macOS) or configure PHP_FPM_ENDPOINT in %s/host.env", a.Cfg.Configs)
+}
+
+// phpVersionNumbers renders versions' numbers as a comma-joined list
+// for error messages (e.g. "8.3, 8.4").
+func phpVersionNumbers(versions []phpfpm.Version) string {
+	nums := make([]string, len(versions))
+	for i, v := range versions {
+		nums[i] = v.Number
+	}
+	return strings.Join(nums, ", ")
+}
+
+// resolvePHPVersion decides which PHP-FPM version (if any) a new php
+// service should get its own dedicated pool under. requested is the
+// --php-version= flag value (may be empty); noPool forces the legacy
+// shared/global PHP_FPM_ENDPOINT behavior even when per-version pools
+// are detected. Returns "" when the service should use the legacy
+// endpoint instead of a per-service pool -- e.g. no versions are
+// auto-detectable on this host/OS at all, matching the no-forced-
+// migration decision: a service only ever gets a per-service pool when
+// one can actually be resolved, never as a hard requirement.
+func (a *App) resolvePHPVersion(requested string, noPool bool) (string, error) {
+	if noPool {
+		return "", nil
+	}
+	versions := phpfpm.DetectVersions()
+	if len(versions) == 0 {
+		return "", nil
+	}
+	if requested != "" {
+		for _, v := range versions {
+			if v.Number == requested {
+				return requested, nil
+			}
+		}
+		return "", a.errf("PHP version %s not found (detected: %s)", requested, phpVersionNumbers(versions))
+	}
+	if len(versions) == 1 {
+		return versions[0].Number, nil
+	}
+	return "", a.errf("multiple PHP-FPM versions detected (%s); specify --php-version=", phpVersionNumbers(versions))
+}
+
+// setupPHPPool creates domain/service's dedicated php-fpm pool: its
+// pool identity (unix user + group -- see below), the pool config file
+// itself (validated + reloaded by phpfpm.WritePool), and finally
+// records the result on the service (Store.SetServicePHPFPM). Called
+// right after the service's document root exists (servicefiles.Create)
+// and the service is registered (Store.AddService) -- config on disk
+// only ever reflects a pool that was actually created, never a
+// half-applied one.
+//
+// Pool identity differs by OS: on Linux, systemd runs php-fpm's master
+// as root, so it can chown the pool's socket to (and run the pool's
+// workers as) a dedicated unix user wor creates just for this service --
+// full isolation between services. On macOS, Homebrew's php-fpm master
+// runs as the current login user (not root), and an unprivileged master
+// cannot chown a socket to, or switch a worker to, a *different* unix
+// user -- attempting to caused a real "failed to chown() the socket"
+// failure the first time this shipped. So macOS pools instead run as
+// that same current user: no isolation between services on macOS
+// (found/decided 2026-07-05), only Linux gets the originally-designed
+// per-service unix-user isolation.
+func (a *App) setupPHPPool(domain, service, phpVersion string) error {
+	version, ok := phpfpm.ResolveVersion(phpVersion)
+	if !ok {
+		return a.errf("PHP %s is no longer detected on this host", phpVersion)
+	}
+
+	var poolUser, group string
+	if osutil.IsMacOS() {
+		u, g, err := phpfpm.CurrentUnixUser()
+		if err != nil {
+			return err
+		}
+		poolUser, group = u, g
+	} else {
+		poolUser = phpfpm.PoolName(domain, service)
+		docRoot := filepath.Join(a.Store.ServiceDir(domain, service), "public")
+		if err := phpfpm.EnsureUser(poolUser); err != nil {
+			return err
+		}
+		g, err := phpfpm.GrantGroupAccess(docRoot, poolUser)
+		if err != nil {
+			return err
+		}
+		group = g
+	}
+
+	pool := phpfpm.Pool{Domain: domain, Service: service, Version: version, User: poolUser, Group: group}
+	if err := phpfpm.WritePool(pool); err != nil {
+		return err
+	}
+	return a.Store.SetServicePHPFPM(domain, service, phpVersion, group, 0)
+}
+
+// teardownPHPPool removes domain/service's dedicated php-fpm pool (pool
+// config file + unix user) and clears its PHP-FPM record, best-effort
+// like systemd.RemoveUnit: failures are warned about, not fatal, so a
+// service can still be removed even if its pool was already gone or
+// PHP-FPM itself was uninstalled in the meantime.
+func (a *App) teardownPHPPool(domain, service string) {
+	phpVersion := a.Store.GetServicePHPVersion(domain, service)
+	if phpVersion == "" {
+		return
+	}
+	if version, ok := phpfpm.ResolveVersion(phpVersion); ok {
+		if err := phpfpm.RemovePool(version, domain, service); err != nil {
+			a.warn("could not remove php-fpm pool: %s", err)
+		}
+	} else {
+		a.warn("could not resolve PHP %s to remove its php-fpm pool (already uninstalled?)", phpVersion)
+	}
+	// macOS pools run as the current login user (see setupPHPPool) --
+	// there's no dedicated per-service unix user to remove there.
+	if !osutil.IsMacOS() {
+		if err := phpfpm.RemoveUser(phpfpm.PoolName(domain, service)); err != nil {
+			a.warn("could not remove php-fpm pool user: %s", err)
+		}
+	}
+	if err := a.Store.ClearServicePHPFPM(domain, service); err != nil {
+		a.warn("could not clear php-fpm record: %s", err)
+	}
 }
 
 // requireTemplateRuntime hard-blocks service creation (in both
@@ -261,6 +394,14 @@ func (a *App) cmdService(args []string) error {
 		if err := a.requireTemplateRuntime(template); err != nil {
 			return err
 		}
+		var phpVersion string
+		if domainmodel.TemplateRequiresPHP(template) {
+			v, err := a.resolvePHPVersion(fl.Get("php-version", ""), fl.Has("no-php-pool"))
+			if err != nil {
+				return err
+			}
+			phpVersion = v
+		}
 		if err := a.Store.MakeDomainFiles(domain); err != nil {
 			return err
 		}
@@ -310,9 +451,17 @@ func (a *App) cmdService(args []string) error {
 				return err
 			}
 		}
-		if domainmodel.TemplateRequiresPort(template) {
+		if phpVersion != "" {
+			if err := a.setupPHPPool(domain, service, phpVersion); err != nil {
+				return err
+			}
+		}
+		switch {
+		case domainmodel.TemplateRequiresPort(template):
 			a.ok("Service ready: %s/%s (%s, port %d)", domain, service, template, port)
-		} else {
+		case phpVersion != "":
+			a.ok("Service ready: %s/%s (%s, PHP %s pool)", domain, service, template, phpVersion)
+		default:
 			a.ok("Service ready: %s/%s (%s)", domain, service, template)
 		}
 		return nil
@@ -356,6 +505,9 @@ func (a *App) cmdService(args []string) error {
 			}
 		}
 		t := a.Store.GetServiceType(domain, service)
+		if domainmodel.TemplateRequiresPHP(t) {
+			a.teardownPHPPool(domain, service)
+		}
 		switch domainmodel.ProcessProviderFor(t) {
 		case "pm2":
 			if commandExists("pm2") {

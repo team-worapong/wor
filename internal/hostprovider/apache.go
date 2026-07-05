@@ -108,7 +108,7 @@ func apacheFallbackPaths() []string {
 }
 
 func (a *apacheProvider) hostConfigName(host string) string { return "wor__" + host + ".conf" }
-func (a *apacheProvider) defaultConfigName() string           { return "000_wor_default.conf" }
+func (a *apacheProvider) defaultConfigName() string         { return "000_wor_default.conf" }
 
 // documentRootTemplate mirrors apache_template_uses_document_root():
 // every process-supervised template (node, go, python) proxies
@@ -210,6 +210,66 @@ func (a *apacheProvider) reload() error {
 	return runSudo(bin, "graceful")
 }
 
+// running reports whether Apache is currently up. See nginxProvider's
+// running() for the same per-OS reasoning; Linux tries both common
+// service names (apache2 on Debian/Ubuntu, httpd on RHEL-family),
+// matching reload()'s existing try-both fallback.
+func (a *apacheProvider) running() bool {
+	if osutil.IsMacOS() {
+		return brewServiceStarted("httpd")
+	}
+	if osutil.IsWindows() {
+		return processRunning("httpd.exe")
+	}
+	if osutil.Exists("systemctl") {
+		return systemctlActive("apache2") || systemctlActive("httpd")
+	}
+	if osutil.Exists("service") {
+		if out, err := exec.Command("service", "apache2", "status").CombinedOutput(); err == nil && strings.Contains(strings.ToLower(string(out)), "running") {
+			return true
+		}
+		out, err := exec.Command("service", "httpd", "status").CombinedOutput()
+		return err == nil && strings.Contains(strings.ToLower(string(out)), "running")
+	}
+	return false
+}
+
+// start starts Apache if it isn't already running (see running()).
+func (a *apacheProvider) start() error {
+	bin, ok := a.binary()
+	if osutil.IsMacOS() {
+		if osutil.Exists("brew") {
+			return runWithOutput(exec.Command("brew", "services", "start", "httpd"))
+		}
+		if !ok {
+			return fmt.Errorf("apache binary not found")
+		}
+		return runWithOutput(exec.Command(bin, "start"))
+	}
+	if osutil.IsWindows() {
+		if !ok {
+			return fmt.Errorf("apache binary not found")
+		}
+		return runWithOutput(exec.Command(bin, "-k", "start"))
+	}
+	if osutil.Exists("systemctl") {
+		if err := runSudo("systemctl", "start", "apache2"); err == nil {
+			return nil
+		}
+		return runSudo("systemctl", "start", "httpd")
+	}
+	if osutil.Exists("service") {
+		if err := runSudo("service", "apache2", "start"); err == nil {
+			return nil
+		}
+		return runSudo("service", "httpd", "start")
+	}
+	if !ok {
+		return fmt.Errorf("apache binary not found")
+	}
+	return runSudo(bin, "start")
+}
+
 func apacheServerAliasLine(aliases []string) string {
 	if len(aliases) == 0 {
 		return ""
@@ -272,22 +332,22 @@ func (a *apacheProvider) writeConfig(p WriteParams, siteFile string) error {
 	}
 
 	vars := map[string]string{
-		"HOST":                     p.Host,
-		"SERVER_NAMES":             strings.TrimSpace(p.Host + " " + strings.Join(p.Aliases, " ")),
-		"APACHE_SERVER_ALIAS":      apacheServerAliasLine(p.Aliases),
-		"APACHE_HTTP_REDIRECT":     apacheHTTPRedirectBlock(p.Host, p.Aliases, p.Preferred, p.SSLEnabled),
-		"APACHE_SSL_CHAIN_FILE":    apacheSSLChainFileLine(p.SSLChainFile),
-		"DOMAIN":                   p.Domain,
-		"SERVICE":                  p.Service,
-		"PORT":                     portString(p.Port),
-		"DOCUMENT_ROOT":            p.DocumentRoot,
+		"HOST":                      p.Host,
+		"SERVER_NAMES":              strings.TrimSpace(p.Host + " " + strings.Join(p.Aliases, " ")),
+		"APACHE_SERVER_ALIAS":       apacheServerAliasLine(p.Aliases),
+		"APACHE_HTTP_REDIRECT":      apacheHTTPRedirectBlock(p.Host, p.Aliases, p.Preferred, p.SSLEnabled),
+		"APACHE_SSL_CHAIN_FILE":     apacheSSLChainFileLine(p.SSLChainFile),
+		"DOMAIN":                    p.Domain,
+		"SERVICE":                   p.Service,
+		"PORT":                      portString(p.Port),
+		"DOCUMENT_ROOT":             p.DocumentRoot,
 		"APACHE_DOCUMENT_ROOT_LINE": documentRootLine,
-		"DEFAULT_PUBLIC_PATH":      p.DefaultPublicPath,
-		"APACHE_LOG_DIR":           a.logDir(),
-		"PHP_FPM_ENDPOINT":         p.PHPFPMEndpoint,
-		"SSL_CERT_FILE":            p.SSLCertFile,
-		"SSL_KEY_FILE":             p.SSLKeyFile,
-		"PRODUCT_NAME":             version.ProductName,
+		"DEFAULT_PUBLIC_PATH":       p.DefaultPublicPath,
+		"APACHE_LOG_DIR":            a.logDir(),
+		"PHP_FPM_ENDPOINT":          p.PHPFPMEndpoint,
+		"SSL_CERT_FILE":             p.SSLCertFile,
+		"SSL_KEY_FILE":              p.SSLKeyFile,
+		"PRODUCT_NAME":              version.ProductName,
 	}
 	vars["APACHE_SERVICE_CONFIG"] = render.Render(serviceTemplate, vars)
 	if p.SSLEnabled {

@@ -26,8 +26,8 @@ func OSName() string {
 }
 
 func IsWindows() bool { return runtime.GOOS == "windows" }
-func IsMacOS() bool    { return runtime.GOOS == "darwin" }
-func IsLinux() bool    { return runtime.GOOS == "linux" }
+func IsMacOS() bool   { return runtime.GOOS == "darwin" }
+func IsLinux() bool   { return runtime.GOOS == "linux" }
 
 // Exists reports whether a command is resolvable on PATH.
 func Exists(name string) bool {

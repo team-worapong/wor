@@ -10,6 +10,7 @@ import (
 	"wor/internal/hostprovider"
 	"wor/internal/hostsfile"
 	"wor/internal/osutil"
+	"wor/internal/phpfpm"
 	"wor/internal/pm2"
 	"wor/internal/systemd"
 )
@@ -125,6 +126,13 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 		a.docOK("%s", osutil.RunVersion(phpBin, "--version"))
 	} else {
 		fail = a.docFail("PHP not installed") || fail
+	}
+	if versions := phpfpm.DetectVersions(); len(versions) > 0 {
+		a.docOK("PHP-FPM per-service pools available: %s", phpVersionNumbers(versions))
+	} else if _, ok := hostprovider.PHPFPMEndpoint(a.Cfg); ok {
+		a.docWarn("no per-version PHP-FPM pool.d layout detected; php services use the shared PHP_FPM_ENDPOINT")
+	} else {
+		a.docWarn("PHP-FPM not detected (per-version or PHP_FPM_ENDPOINT); php services will fail their runtime check")
 	}
 
 	if osutil.Exists("node") {

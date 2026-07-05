@@ -8,6 +8,7 @@ import (
 	"wor/internal/dbbackup"
 	"wor/internal/hostprovider"
 	"wor/internal/osutil"
+	"wor/internal/phpfpm"
 	"wor/internal/pm2"
 )
 
@@ -64,6 +65,11 @@ func (a *App) cmdEnv(args []string) error {
 		fmt.Fprintf(a.Out, "PHP_FPM_ENDPOINT   : %s\n", ep)
 	} else {
 		fmt.Fprintln(a.Out, "PHP_FPM_ENDPOINT   : not configured")
+	}
+	if versions := phpfpm.DetectVersions(); len(versions) > 0 {
+		fmt.Fprintf(a.Out, "PHP_FPM_VERSIONS   : %s (per-service pools available)\n", phpVersionNumbers(versions))
+	} else {
+		fmt.Fprintln(a.Out, "PHP_FPM_VERSIONS   : none detected (per-service pools unavailable, using PHP_FPM_ENDPOINT)")
 	}
 	fmt.Fprintf(a.Out, "DB_ENGINE          : %s\n", dbbackup.DetectEngine())
 	if bin, ok := dbbackup.ClientBin(dbEngineForDetect()); ok {

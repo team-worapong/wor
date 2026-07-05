@@ -24,8 +24,8 @@ type State struct {
 	AutoRenew string `json:"autoRenew"` // "enabled" | "disabled" | "unsupported"
 }
 
-func HostDir(sslRoot, host string) string       { return filepath.Join(sslRoot, "hosts", host) }
-func stateFile(sslRoot, host string) string     { return filepath.Join(HostDir(sslRoot, host), "ssl.json") }
+func HostDir(sslRoot, host string) string   { return filepath.Join(sslRoot, "hosts", host) }
+func stateFile(sslRoot, host string) string { return filepath.Join(HostDir(sslRoot, host), "ssl.json") }
 
 func WriteState(sslRoot, host, provider, cert, key, autoRenew string) error {
 	dir := HostDir(sslRoot, host)

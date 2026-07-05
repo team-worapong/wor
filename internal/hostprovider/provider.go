@@ -21,21 +21,21 @@ import (
 // WriteParams carries everything a provider needs to render one virtual
 // host file. Aliases/Preferred/SSL fields are optional.
 type WriteParams struct {
-	Host          string
-	Domain        string
-	Service       string
-	SvcType       string // service template id: static, node, go, python, php
-	Port          int    // 0 if the template does not use a port
-	SiteFile      string
-	Aliases       []string
-	Preferred     string // which of Host/Aliases[0] should be the canonical redirect target
-	SSLEnabled    bool
-	SSLCertFile   string
-	SSLKeyFile    string
-	SSLChainFile  string // Apache only
-	PHPFPMEndpoint string
+	Host              string
+	Domain            string
+	Service           string
+	SvcType           string // service template id: static, node, go, python, php
+	Port              int    // 0 if the template does not use a port
+	SiteFile          string
+	Aliases           []string
+	Preferred         string // which of Host/Aliases[0] should be the canonical redirect target
+	SSLEnabled        bool
+	SSLCertFile       string
+	SSLKeyFile        string
+	SSLChainFile      string // Apache only
+	PHPFPMEndpoint    string
 	DefaultPublicPath string
-	DocumentRoot  string // resolved absolute path to the service's document root
+	DocumentRoot      string // resolved absolute path to the service's document root
 }
 
 // Provider is the interface every host (web server) provider implements.
@@ -57,6 +57,8 @@ type providerImpl interface {
 	enableHost(siteFile, enabledFile string) error
 	test() error
 	reload() error
+	running() bool                            // whether the web server process is currently up
+	start() error                             // start it if not (used by `wor run`)
 	documentRootTemplate(svcType string) bool // whether template needs DOCUMENT_ROOT injected (apache quirk)
 }
 
@@ -73,11 +75,11 @@ func New(name string, cfg *config.Config) (*Provider, error) {
 
 func (p *Provider) SitesAvailable() string { return p.impl.sitesAvailable() }
 func (p *Provider) SitesEnabled() string   { return p.impl.sitesEnabled() }
-func (p *Provider) LogDir() string        { return p.impl.logDir() }
+func (p *Provider) LogDir() string         { return p.impl.logDir() }
 func (p *Provider) Binary() (string, bool) { return p.impl.binary() }
 
-func (p *Provider) HostConfigName(host string) string    { return p.impl.hostConfigName(host) }
-func (p *Provider) DefaultConfigName() string             { return p.impl.defaultConfigName() }
+func (p *Provider) HostConfigName(host string) string { return p.impl.hostConfigName(host) }
+func (p *Provider) DefaultConfigName() string         { return p.impl.defaultConfigName() }
 func (p *Provider) SiteAvailableFile(host string) string {
 	return filepath.Join(p.SitesAvailable(), p.HostConfigName(host))
 }
@@ -120,6 +122,18 @@ func (p *Provider) EnableHost(siteFile, enabledFile string) error {
 
 func (p *Provider) Test() error   { return p.impl.test() }
 func (p *Provider) Reload() error { return p.impl.reload() }
+
+// IsRunning reports whether the web server process is currently up.
+// Used by `wor run` to decide whether it needs to start the web
+// server before touching anything else -- unlike Reload(), which on
+// Linux assumes the service is already active (`systemctl reload`
+// fails outright otherwise).
+func (p *Provider) IsRunning() bool { return p.impl.running() }
+
+// Start starts the web server if it isn't already running. Safe to
+// call when it's already up (each impl checks first or the underlying
+// tool itself treats it as a no-op, e.g. `brew services start`).
+func (p *Provider) Start() error { return p.impl.start() }
 
 func (p *Provider) WriteConfig(params WriteParams) error {
 	return p.impl.writeConfig(params, params.SiteFile)
@@ -181,6 +195,41 @@ func (p *Provider) FindWorHostConfigs(dir string) ([]string, error) {
 func pathExists(p string) bool {
 	_, err := os.Lstat(p)
 	return err == nil
+}
+
+// systemctlActive reports whether unit is active, via a plain
+// (unelevated) `systemctl is-active` -- read-only state, so it doesn't
+// need to go through osutil.SudoCommand's confirm-once elevation gate,
+// matching systemd.querySample's same reasoning for wor-managed units.
+func systemctlActive(unit string) bool {
+	out, err := exec.Command("systemctl", "is-active", unit).Output()
+	return err == nil && strings.TrimSpace(string(out)) == "active"
+}
+
+// brewServiceStarted reports whether Homebrew considers name's service
+// started, by parsing `brew services list`'s second column. A
+// deliberately simple line/field scanner (same tradeoff as this
+// project's other best-effort text parsers), not a full table parser.
+func brewServiceStarted(name string) bool {
+	out, err := exec.Command("brew", "services", "list").Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == name {
+			return fields[1] == "started"
+		}
+	}
+	return false
+}
+
+// processRunning is the Windows fallback for "is this running" -- there
+// is no systemd/Homebrew equivalent there, so this just checks whether a
+// process with this image name is listed by tasklist.
+func processRunning(imageName string) bool {
+	out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq "+imageName).Output()
+	return err == nil && strings.Contains(string(out), imageName)
 }
 
 // runWithOutput runs cmd with stdout/stderr attached to the current

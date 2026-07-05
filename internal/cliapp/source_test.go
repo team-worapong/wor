@@ -50,16 +50,16 @@ func TestSourceBackupPath(t *testing.T) {
 		Store: store,
 	}
 
-	if err := store.MakeDomainFiles("shop.example.com"); err != nil {
+	if err := store.MakeDomainFiles("shop-example-com"); err != nil {
 		t.Fatalf("MakeDomainFiles: %v", err)
 	}
 
-	out, err := app.sourceBackup("shop.example.com", "")
+	out, err := app.sourceBackup("shop-example-com", "")
 	if err != nil {
 		t.Fatalf("sourceBackup: %v", err)
 	}
 
-	wantDir := filepath.Join(backupsDir, "shop.example.com", "source")
+	wantDir := filepath.Join(backupsDir, "shop-example-com", "source")
 	gotDir := filepath.Dir(out)
 	if gotDir != wantDir {
 		t.Errorf("backup written under %q, want %q (backups/<domain>/source)", gotDir, wantDir)
@@ -80,7 +80,7 @@ func setupGitIgnoreFixture(t *testing.T) (app *App, domain string) {
 		Cfg:   &config.Config{Backups: filepath.Join(root, "backups")},
 		Store: store,
 	}
-	domain = "shop.example.com"
+	domain = "shop-example-com"
 	if err := store.MakeDomainFiles(domain); err != nil {
 		t.Fatalf("MakeDomainFiles: %v", err)
 	}
@@ -91,9 +91,9 @@ func setupGitIgnoreFixture(t *testing.T) (app *App, domain string) {
 	}
 	files := map[string]string{
 		filepath.Join(domainDir, "node_modules", "pkg.js"): "module.exports = {}",
-		filepath.Join(domainDir, "debug.log"):               "some debug output",
-		filepath.Join(domainDir, "keep.txt"):                "keep me",
-		filepath.Join(domainDir, ".gitignore"):              "node_modules/\n*.log\n",
+		filepath.Join(domainDir, "debug.log"):              "some debug output",
+		filepath.Join(domainDir, "keep.txt"):               "keep me",
+		filepath.Join(domainDir, ".gitignore"):             "node_modules/\n*.log\n",
 	}
 	for path, content := range files {
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

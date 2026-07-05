@@ -57,19 +57,19 @@ func writeFile(t *testing.T, path, content string) {
 func TestPrintHostListEnabledDisabledSSL(t *testing.T) {
 	app, avail, enabled := newTestHostListApp(t)
 
-	if err := app.Store.MakeDomainFiles("shop.example.com"); err != nil {
+	if err := app.Store.MakeDomainFiles("shop-example-com"); err != nil {
 		t.Fatalf("MakeDomainFiles: %v", err)
 	}
-	if err := app.Store.AddService("shop.example.com", "api-gateway", "", 8080, "go", ""); err != nil {
+	if err := app.Store.AddService("shop-example-com", "api-gateway", "", 8080, "go", ""); err != nil {
 		t.Fatalf("AddService(api-gateway): %v", err)
 	}
-	if err := app.Store.AddHostToService("shop.example.com", "api-gateway", "api.example.com"); err != nil {
+	if err := app.Store.AddHostToService("shop-example-com", "api-gateway", "api.example.com"); err != nil {
 		t.Fatalf("AddHostToService(api): %v", err)
 	}
-	if err := app.Store.AddService("shop.example.com", "landing", "", 0, "static", ""); err != nil {
+	if err := app.Store.AddService("shop-example-com", "landing", "", 0, "static", ""); err != nil {
 		t.Fatalf("AddService(landing): %v", err)
 	}
-	if err := app.Store.AddHostToService("shop.example.com", "landing", "internal.local"); err != nil {
+	if err := app.Store.AddHostToService("shop-example-com", "landing", "internal.local"); err != nil {
 		t.Fatalf("AddHostToService(internal): %v", err)
 	}
 
@@ -115,8 +115,8 @@ func TestPrintHostListEnabledDisabledSSL(t *testing.T) {
 	enabledSection := out[enabledIdx:disabledIdx]
 	disabledSection := out[disabledIdx:]
 
-	if !strings.Contains(enabledSection, "api.example.com") || !strings.Contains(enabledSection, "shop.example.com/api-gateway") {
-		t.Errorf("enabled section missing api.example.com -> shop.example.com/api-gateway:\n%s", enabledSection)
+	if !strings.Contains(enabledSection, "api.example.com") || !strings.Contains(enabledSection, "shop-example-com/api-gateway") {
+		t.Errorf("enabled section missing api.example.com -> shop-example-com/api-gateway:\n%s", enabledSection)
 	}
 	if !strings.Contains(enabledSection, "[ssl]") {
 		t.Errorf("expected [ssl] tag for api.example.com in enabled section:\n%s", enabledSection)

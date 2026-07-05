@@ -63,3 +63,76 @@ func TestListAllServicesNoDomains(t *testing.T) {
 		t.Errorf("expected 0 services for an empty domains dir, got %d", len(refs))
 	}
 }
+
+func TestServicePHPFPMDefaultsToFallback(t *testing.T) {
+	store := NewStore(t.TempDir())
+	if err := store.MakeDomainFiles("blog.example.com"); err != nil {
+		t.Fatalf("MakeDomainFiles: %v", err)
+	}
+	if err := store.AddService("blog.example.com", "cms", "", 0, "php", ""); err != nil {
+		t.Fatalf("AddService(cms): %v", err)
+	}
+
+	// A freshly created php service has no per-service pool yet -- it
+	// must fall back to the host-wide PHP_FPM_ENDPOINT, matching the
+	// no-forced-migration decision for existing php services.
+	if v := store.GetServicePHPVersion("blog.example.com", "cms"); v != "" {
+		t.Errorf("GetServicePHPVersion() = %q, want \"\" before SetServicePHPFPM", v)
+	}
+	cfg, err := store.LoadServices("blog.example.com")
+	if err != nil {
+		t.Fatalf("LoadServices: %v", err)
+	}
+	svc := cfg.FindService("cms")
+	if svc == nil {
+		t.Fatal("cms not found")
+	}
+	if svc.UsesPerServicePHPFPM() {
+		t.Error("UsesPerServicePHPFPM() = true, want false before SetServicePHPFPM")
+	}
+}
+
+func TestSetAndClearServicePHPFPM(t *testing.T) {
+	store := NewStore(t.TempDir())
+	if err := store.MakeDomainFiles("blog.example.com"); err != nil {
+		t.Fatalf("MakeDomainFiles: %v", err)
+	}
+	if err := store.AddService("blog.example.com", "cms", "", 0, "php", ""); err != nil {
+		t.Fatalf("AddService(cms): %v", err)
+	}
+
+	if err := store.SetServicePHPFPM("blog.example.com", "cms", "8.3", "www-data", 10); err != nil {
+		t.Fatalf("SetServicePHPFPM: %v", err)
+	}
+	if v := store.GetServicePHPVersion("blog.example.com", "cms"); v != "8.3" {
+		t.Errorf("GetServicePHPVersion() = %q, want 8.3", v)
+	}
+	cfg, _ := store.LoadServices("blog.example.com")
+	svc := cfg.FindService("cms")
+	if svc.PHPPoolGroup != "www-data" {
+		t.Errorf("PHPPoolGroup = %q, want www-data", svc.PHPPoolGroup)
+	}
+	if svc.PHPMaxChildren != 10 {
+		t.Errorf("PHPMaxChildren = %d, want 10", svc.PHPMaxChildren)
+	}
+	if !svc.UsesPerServicePHPFPM() {
+		t.Error("UsesPerServicePHPFPM() = false, want true after SetServicePHPFPM")
+	}
+
+	if err := store.ClearServicePHPFPM("blog.example.com", "cms"); err != nil {
+		t.Fatalf("ClearServicePHPFPM: %v", err)
+	}
+	if v := store.GetServicePHPVersion("blog.example.com", "cms"); v != "" {
+		t.Errorf("GetServicePHPVersion() after Clear = %q, want \"\"", v)
+	}
+}
+
+func TestSetServicePHPFPMMissingService(t *testing.T) {
+	store := NewStore(t.TempDir())
+	if err := store.MakeDomainFiles("blog.example.com"); err != nil {
+		t.Fatalf("MakeDomainFiles: %v", err)
+	}
+	if err := store.SetServicePHPFPM("blog.example.com", "does-not-exist", "8.3", "www-data", 0); err == nil {
+		t.Error("expected an error for a nonexistent service, got nil")
+	}
+}

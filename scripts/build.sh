@@ -69,13 +69,13 @@ build_one() {
   fi
   local out_path="$ROOT_DIR/dist/$bin_name"
 
-  echo "==> wor build"
+  echo "==> Building"
   echo "    Target : $goos_value/$goarch_value"
   echo "    Output : $out_path"
 
   mkdir -p "$(dirname "$out_path")"
 
-  echo "==> go build ./cmd/wor"
+  #echo "==> go build ./cmd/wor"
   GOOS="$goos_value" GOARCH="$goarch_value" go build -o "$out_path" ./cmd/wor
 
   echo "[OK] Build complete: ./dist/$bin_name"
@@ -93,8 +93,11 @@ case "${1:-}" in
       exit 1
     fi
 
-    echo "==> go vet ./..."
+    echo "==> Checking"
+    go fmt ./...
     go vet ./...
+    echo "==> Running tests"
+    go test ./...
 
     # Matches the GOOS/GOARCH matrix documented in README.md.
     build_one linux linux amd64
@@ -128,7 +131,10 @@ if ! read -r GOOS_VALUE OS_LABEL < <(normalize_os "$GOOS_ARG"); then
   exit 1
 fi
 
-echo "==> go vet ./..."
+echo "==> Checking"
+go fmt ./...
 go vet ./...
+echo "==> Running tests"
+go test ./...
 
 build_one "$GOOS_VALUE" "$OS_LABEL" "$GOARCH_VALUE"

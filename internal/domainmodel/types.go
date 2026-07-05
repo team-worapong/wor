@@ -36,7 +36,29 @@ type Service struct {
 	Env          map[string]string `json:"env,omitempty"`
 	DomainType   string            `json:"domainType,omitempty"`
 	HostsEntries []string          `json:"hostsEntries,omitempty"`
+
+	// PHPVersion, PHPPoolGroup, and PHPMaxChildren are only meaningful
+	// for php-template services, and only once this service has its own
+	// per-service php-fpm pool (see internal/phpfpm). PHPVersion empty
+	// means this php service has no dedicated pool and still falls back
+	// to the host-wide PHP_FPM_ENDPOINT config value -- the deliberate
+	// backward-compat/migration behavior agreed for the per-service
+	// php-fpm feature: existing php services are never migrated
+	// automatically, only newly created or explicitly edited ones ever
+	// get a non-empty PHPVersion. PHPPoolGroup records the document
+	// root's owner group that the pool's dedicated unix user was granted
+	// read access to (internal/phpfpm.GrantGroupAccess), so later
+	// pool/removal operations don't need to re-stat the document root
+	// and can't drift from what was actually granted at creation time.
+	PHPVersion     string `json:"phpVersion,omitempty"`
+	PHPPoolGroup   string `json:"phpPoolGroup,omitempty"`
+	PHPMaxChildren int    `json:"phpMaxChildren,omitempty"`
 }
+
+// UsesPerServicePHPFPM reports whether svc has its own dedicated
+// php-fpm pool (as opposed to relying on the host-wide
+// PHP_FPM_ENDPOINT fallback). Only ever true for php-template services.
+func (svc Service) UsesPerServicePHPFPM() bool { return svc.PHPVersion != "" }
 
 // ServicesConfig is services.config.json.
 type ServicesConfig struct {

@@ -103,9 +103,9 @@ func nginxFallbackPaths() []string {
 	}
 }
 
-func (n *nginxProvider) hostConfigName(host string) string    { return "wor__" + host + ".conf" }
-func (n *nginxProvider) defaultConfigName() string             { return "000_wor_default.conf" }
-func (n *nginxProvider) documentRootTemplate(string) bool      { return true }
+func (n *nginxProvider) hostConfigName(host string) string { return "wor__" + host + ".conf" }
+func (n *nginxProvider) defaultConfigName() string         { return "000_wor_default.conf" }
+func (n *nginxProvider) documentRootTemplate(string) bool  { return true }
 
 // hostFiles returns every location wor might have written a config for
 // host, including legacy unprefixed names from early builds.
@@ -191,6 +191,61 @@ func (n *nginxProvider) reload() error {
 	return runSudo(bin, "-s", "reload")
 }
 
+// running reports whether nginx is currently up, per-OS: `brew services
+// list` on macOS, `systemctl is-active`/`service status` on Linux, a
+// tasklist scan on Windows (nginx.exe has no service wrapper there).
+func (n *nginxProvider) running() bool {
+	if osutil.IsMacOS() {
+		return brewServiceStarted("nginx")
+	}
+	if osutil.IsWindows() {
+		return processRunning("nginx.exe")
+	}
+	if osutil.Exists("systemctl") {
+		return systemctlActive("nginx")
+	}
+	if osutil.Exists("service") {
+		out, err := exec.Command("service", "nginx", "status").CombinedOutput()
+		return err == nil && strings.Contains(strings.ToLower(string(out)), "running")
+	}
+	return false
+}
+
+// start starts nginx if it isn't already running (see running()).
+// Unlike reload(), which on Linux assumes nginx is already active
+// (`systemctl reload` fails otherwise), this is the "bring it up from
+// cold" path `wor run` needs.
+func (n *nginxProvider) start() error {
+	bin, ok := n.binary()
+	if osutil.IsMacOS() {
+		if osutil.Exists("brew") {
+			return runWithOutput(exec.Command("brew", "services", "start", "nginx"))
+		}
+		if !ok {
+			return fmt.Errorf("nginx binary not found")
+		}
+		return runWithOutput(exec.Command(bin))
+	}
+	if osutil.IsWindows() {
+		if !ok {
+			return fmt.Errorf("nginx binary not found")
+		}
+		// nginx.exe daemonizes itself once launched -- run it detached
+		// rather than waiting on it (it never exits on its own).
+		return exec.Command(bin).Start()
+	}
+	if osutil.Exists("systemctl") {
+		return runSudo("systemctl", "start", "nginx")
+	}
+	if osutil.Exists("service") {
+		return runSudo("service", "nginx", "start")
+	}
+	if !ok {
+		return fmt.Errorf("nginx binary not found")
+	}
+	return runWithOutput(exec.Command(bin))
+}
+
 // hostCheckBlock rejects requests whose Host header doesn't match one
 // of the registered names, routing them to the @wor_default location.
 // Port of lib/providers/webserver/nginx.sh nginx_host_check_block().
@@ -228,18 +283,18 @@ func (n *nginxProvider) writeConfig(p WriteParams, siteFile string) error {
 	}
 
 	vars := map[string]string{
-		"HOST":              p.Host,
-		"SERVER_NAMES":      strings.TrimSpace(p.Host + " " + strings.Join(p.Aliases, " ")),
-		"NGINX_HOST_CHECK":  nginxHostCheckBlock(p.Host, p.Aliases),
-		"NGINX_REDIRECT":    nginxRedirectBlock(p.Host, p.Aliases, p.Preferred),
-		"DOMAIN":            p.Domain,
-		"SERVICE":           p.Service,
-		"PORT":              portString(p.Port),
-		"DOCUMENT_ROOT":     p.DocumentRoot,
+		"HOST":                p.Host,
+		"SERVER_NAMES":        strings.TrimSpace(p.Host + " " + strings.Join(p.Aliases, " ")),
+		"NGINX_HOST_CHECK":    nginxHostCheckBlock(p.Host, p.Aliases),
+		"NGINX_REDIRECT":      nginxRedirectBlock(p.Host, p.Aliases, p.Preferred),
+		"DOMAIN":              p.Domain,
+		"SERVICE":             p.Service,
+		"PORT":                portString(p.Port),
+		"DOCUMENT_ROOT":       p.DocumentRoot,
 		"DEFAULT_PUBLIC_PATH": p.DefaultPublicPath,
-		"NGINX_LOG_DIR":     n.logDir(),
-		"PHP_FPM_ENDPOINT":  p.PHPFPMEndpoint,
-		"PRODUCT_NAME":      version.ProductName,
+		"NGINX_LOG_DIR":       n.logDir(),
+		"PHP_FPM_ENDPOINT":    p.PHPFPMEndpoint,
+		"PRODUCT_NAME":        version.ProductName,
 	}
 	if p.SSLEnabled {
 		httpsTpl, err := templates.Get("webserver/nginx", "https.conf")

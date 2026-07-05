@@ -12,6 +12,7 @@ import (
 	"wor/internal/hostprovider"
 	"wor/internal/hostsfile"
 	"wor/internal/osutil"
+	"wor/internal/phpfpm"
 	"wor/internal/ssl"
 )
 
@@ -299,6 +300,13 @@ func (a *App) printHostList(provider *hostprovider.Provider) error {
 		row := hostListRow{host: host, target: "-", port: "n/a", enabled: sameDir || enabledNames[name]}
 		if target, ok := a.Store.ResolveHost(host); ok {
 			row.target = target
+			// target is "<domain>/<service>" built directly from what's
+			// on disk, which should always be a valid slug/service pair
+			// when written by wor itself -- but don't silently drop the
+			// port lookup if it somehow isn't (e.g. services.config.json
+			// hand-edited into a bad state); a warning at least makes
+			// an otherwise-invisible "n/a" explainable instead of
+			// looking like the service just has no port configured.
 			if domain, service, err := domainmodel.ParseTarget(target); err == nil {
 				svcType := a.Store.GetServiceType(domain, service)
 				if domainmodel.TemplateRequiresPort(svcType) {
@@ -306,6 +314,8 @@ func (a *App) printHostList(provider *hostprovider.Provider) error {
 						row.port = fmt.Sprintf(":%d", p)
 					}
 				}
+			} else {
+				a.warn("host %s resolves to invalid target %q: %s", host, target, err)
 			}
 		}
 		if st, ok, _ := ssl.LoadState(a.Cfg.SSL, host); ok {
@@ -472,17 +482,37 @@ func (a *App) buildWriteParams(provider *hostprovider.Provider, host, domain, se
 		DocumentRoot:      docRoot,
 	}
 	if domainmodel.TemplateRequiresPHP(svcType) {
-		var ep string
-		var err error
-		if provider.Name == "nginx" {
-			ep, err = hostprovider.PHPFPMEndpointForNginx(a.Cfg)
+		// A non-empty PHPVersion means this service has its own
+		// dedicated php-fpm pool (see internal/phpfpm) -- point the
+		// vhost at that pool's own socket instead of the host-wide
+		// PHP_FPM_ENDPOINT. Empty PHPVersion is the backward-compat
+		// path: this php service predates the per-service-pool feature
+		// (or was created with --no-php-pool), so it keeps using the
+		// shared endpoint exactly as before.
+		if phpVersion := a.Store.GetServicePHPVersion(domain, service); phpVersion != "" {
+			version, ok := phpfpm.ResolveVersion(phpVersion)
+			if !ok {
+				return params, fmt.Errorf("PHP %s (used by %s/%s's dedicated pool) is no longer detected on this host; run wor doctor", phpVersion, domain, service)
+			}
+			ep := "unix:" + phpfpm.SocketPath(version, domain, service)
+			if provider.Name == "nginx" {
+				params.PHPFPMEndpoint = hostprovider.FormatEndpointForNginx(ep)
+			} else {
+				params.PHPFPMEndpoint = hostprovider.FormatEndpointForApache(ep)
+			}
 		} else {
-			ep, err = hostprovider.PHPFPMEndpointForApache(a.Cfg)
+			var ep string
+			var err error
+			if provider.Name == "nginx" {
+				ep, err = hostprovider.PHPFPMEndpointForNginx(a.Cfg)
+			} else {
+				ep, err = hostprovider.PHPFPMEndpointForApache(a.Cfg)
+			}
+			if err != nil {
+				return params, err
+			}
+			params.PHPFPMEndpoint = ep
 		}
-		if err != nil {
-			return params, err
-		}
-		params.PHPFPMEndpoint = ep
 	}
 	if st, ok, _ := ssl.LoadState(a.Cfg.SSL, host); ok {
 		params.SSLEnabled = st.Enabled

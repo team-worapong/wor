@@ -151,27 +151,42 @@ func parseFPMListen(confFile string) []string {
 	return eps
 }
 
-// PHPFPMEndpointForNginx returns the endpoint formatted for nginx's
-// fastcgi_pass directive (unchanged from the resolved value).
+// FormatEndpointForNginx returns ep formatted for nginx's fastcgi_pass
+// directive (unchanged from the resolved value -- nginx accepts both
+// our "unix:/path" and "host:port" forms directly). Split out from
+// PHPFPMEndpointForNginx so a per-service pool socket (see
+// internal/phpfpm) can be formatted the same way the host-wide
+// PHP_FPM_ENDPOINT is, without re-resolving cfg.
+func FormatEndpointForNginx(ep string) string { return ep }
+
+// FormatEndpointForApache reformats ep (a "unix:/path" or "host:port"
+// endpoint) into Apache's mod_proxy_fcgi SetHandler syntax, matching
+// lib/os.sh php_fpm_endpoint_for_apache(). Split out from
+// PHPFPMEndpointForApache for the same reason as FormatEndpointForNginx.
+func FormatEndpointForApache(ep string) string {
+	if strings.HasPrefix(ep, "unix:") {
+		sock := strings.TrimPrefix(ep, "unix:")
+		return fmt.Sprintf("proxy:unix:%s|fcgi://localhost/", sock)
+	}
+	return fmt.Sprintf("proxy:fcgi://%s", ep)
+}
+
+// PHPFPMEndpointForNginx returns the host-wide PHP_FPM_ENDPOINT
+// formatted for nginx's fastcgi_pass directive.
 func PHPFPMEndpointForNginx(cfg *config.Config) (string, error) {
 	ep, ok := PHPFPMEndpoint(cfg)
 	if !ok {
 		return "", fmt.Errorf("PHP_FPM_ENDPOINT is not configured")
 	}
-	return ep, nil
+	return FormatEndpointForNginx(ep), nil
 }
 
-// PHPFPMEndpointForApache reformats a unix-socket endpoint into
-// Apache's mod_proxy_fcgi SetHandler syntax, matching
-// lib/os.sh php_fpm_endpoint_for_apache().
+// PHPFPMEndpointForApache returns the host-wide PHP_FPM_ENDPOINT
+// formatted for Apache's mod_proxy_fcgi SetHandler syntax.
 func PHPFPMEndpointForApache(cfg *config.Config) (string, error) {
 	ep, ok := PHPFPMEndpoint(cfg)
 	if !ok {
 		return "", fmt.Errorf("PHP_FPM_ENDPOINT is not configured")
 	}
-	if strings.HasPrefix(ep, "unix:") {
-		sock := strings.TrimPrefix(ep, "unix:")
-		return fmt.Sprintf("proxy:unix:%s|fcgi://localhost/", sock), nil
-	}
-	return fmt.Sprintf("proxy:fcgi://%s", ep), nil
+	return FormatEndpointForApache(ep), nil
 }

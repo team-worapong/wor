@@ -112,6 +112,8 @@ func (a *App) Run(args []string) int {
 		err = a.cmdDomain(rest)
 	case "service":
 		err = a.cmdService(rest)
+	case "run":
+		err = a.cmdRun(rest)
 	case "host":
 		err = a.cmdHost(rest)
 	case "database":

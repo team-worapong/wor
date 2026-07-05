@@ -5,6 +5,7 @@ import (
 
 	"wor/internal/domainmodel"
 	"wor/internal/osutil"
+	"wor/internal/phpfpm"
 	"wor/internal/pm2"
 	"wor/internal/ssl"
 	"wor/internal/systemd"
@@ -33,6 +34,31 @@ func (a *App) promptCreateTemplate() (string, error) {
 	default:
 		return "", a.errf("invalid service type choice: %s", choice)
 	}
+}
+
+// promptPHPVersion shows a numbered picker for a multiple-detected
+// PHP-FPM versions, mirroring promptCreateTemplate's style. Only called
+// when more than one version was detected -- a single detected version
+// is picked automatically (see cmdCreate), and zero detected versions
+// falls back to the legacy host-wide PHP_FPM_ENDPOINT without asking.
+func (a *App) promptPHPVersion(versions []phpfpm.Version) string {
+	fmt.Fprintln(a.Err)
+	fmt.Fprintln(a.Err, "Select PHP Version")
+	for i, v := range versions {
+		fmt.Fprintf(a.Err, "%d. %s\n", i+1, v.Number)
+	}
+	choice := a.promptDefault("Choose", "1")
+	var idx int
+	fmt.Sscanf(choice, "%d", &idx)
+	if idx >= 1 && idx <= len(versions) {
+		return versions[idx-1].Number
+	}
+	for _, v := range versions {
+		if v.Number == choice {
+			return choice
+		}
+	}
+	return versions[0].Number
 }
 
 func (a *App) cmdCreate(args []string) error {
@@ -109,6 +135,22 @@ func (a *App) cmdCreate(args []string) error {
 	}
 	a.ok("Runtime ready for template: %s", template)
 
+	phpVersion := ""
+	if domainmodel.TemplateRequiresPHP(template) {
+		versions := phpfpm.DetectVersions()
+		switch len(versions) {
+		case 0:
+			// No per-version pool.d layout detected -- fall back to the
+			// legacy host-wide PHP_FPM_ENDPOINT silently; requireTemplateRuntime
+			// already confirmed something usable exists.
+		case 1:
+			phpVersion = versions[0].Number
+			a.ok("Using PHP %s (only version detected)", phpVersion)
+		default:
+			phpVersion = a.promptPHPVersion(versions)
+		}
+	}
+
 	port := 0
 	if domainmodel.TemplateRequiresPort(template) {
 		suggested, err := a.findNextPort(3000)
@@ -149,6 +191,9 @@ func (a *App) cmdCreate(args []string) error {
 	if domainmodel.TemplateRequiresPort(template) {
 		fmt.Fprintf(a.Out, "Port      : %d\n", port)
 	}
+	if phpVersion != "" {
+		fmt.Fprintf(a.Out, "PHP       : %s (dedicated pool)\n", phpVersion)
+	}
 	fmt.Fprintln(a.Out)
 	if !a.confirmYesDefaultNo("Create this service?") {
 		return a.errf("cancelled")
@@ -160,6 +205,9 @@ func (a *App) cmdCreate(args []string) error {
 	serviceArgs := []string{"add", fmt.Sprintf("%s/%s", domain, service), "--host=" + host, "--service-type=" + template}
 	if domainmodel.TemplateRequiresPort(template) {
 		serviceArgs = append(serviceArgs, fmt.Sprintf("--port=%d", port))
+	}
+	if phpVersion != "" {
+		serviceArgs = append(serviceArgs, "--php-version="+phpVersion)
 	}
 	if err := a.cmdService(serviceArgs); err != nil {
 		return err
@@ -253,6 +301,9 @@ func (a *App) cmdCreate(args []string) error {
 		fmt.Fprintf(a.Out, "Process : systemd %s\n", systemd.Name(domain, service))
 	default:
 		fmt.Fprintln(a.Out, "Process : none")
+	}
+	if phpVersion != "" {
+		fmt.Fprintf(a.Out, "PHP Pool: %s (PHP %s)\n", phpfpm.PoolName(domain, service), phpVersion)
 	}
 	fmt.Fprintln(a.Out)
 	fmt.Fprintln(a.Out, "Next:")

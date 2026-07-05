@@ -184,4 +184,3 @@ func TestCmdDatabaseRemoveSkipsMissingEnvFile(t *testing.T) {
 		t.Errorf("expected the profile to still be dropped from config, got %d entries", len(dbCfg.Databases))
 	}
 }
-

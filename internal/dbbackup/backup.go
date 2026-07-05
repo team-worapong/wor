@@ -14,15 +14,15 @@ import (
 // Result is one completed backup file.
 type Result struct {
 	Database string
-	Path      string
+	Path     string
 }
 
 // Options carries everything Backup needs beyond the loaded profile.
 type Options struct {
-	Domain     string
-	Profile    string
-	BackupsDir string // $WOR_HOME/backups
-	Database   string // explicit database name (optional; empty = use profile default or list all)
+	Domain        string
+	Profile       string
+	BackupsDir    string // $WOR_HOME/backups
+	Database      string // explicit database name (optional; empty = use profile default or list all)
 	RetentionDays int
 }
 

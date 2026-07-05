@@ -14,17 +14,17 @@ import (
 
 // Profile is one $WOR_HOME/configs/database/<profile>.env file.
 type Profile struct {
-	Engine                  string
-	Host                    string
-	Port                    string
-	Name                    string
-	User                    string
-	Pass                    string
-	Charset                 string
-	Path                    string // SQLite only
-	SSLMode                 string // PostgreSQL only
-	Encrypt                 string // SQL Server only
-	TrustServerCertificate  string // SQL Server only
+	Engine                 string
+	Host                   string
+	Port                   string
+	Name                   string
+	User                   string
+	Pass                   string
+	Charset                string
+	Path                   string // SQLite only
+	SSLMode                string // PostgreSQL only
+	Encrypt                string // SQL Server only
+	TrustServerCertificate string // SQL Server only
 }
 
 // ProfilePath returns $WOR_HOME/configs/database/<profile>.env.

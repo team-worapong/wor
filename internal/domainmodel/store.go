@@ -18,10 +18,16 @@ type Store struct {
 
 func NewStore(domainsDir string) *Store { return &Store{DomainsDir: domainsDir} }
 
-func (s *Store) DomainDir(domain string) string       { return filepath.Join(s.DomainsDir, domain) }
-func (s *Store) ServicesPath(domain string) string    { return filepath.Join(s.DomainDir(domain), "services.config.json") }
-func (s *Store) DatabasesPath(domain string) string   { return filepath.Join(s.DomainDir(domain), "databases.config.json") }
-func (s *Store) BackupConfigPath(domain string) string { return filepath.Join(s.DomainDir(domain), "backup.config.json") }
+func (s *Store) DomainDir(domain string) string { return filepath.Join(s.DomainsDir, domain) }
+func (s *Store) ServicesPath(domain string) string {
+	return filepath.Join(s.DomainDir(domain), "services.config.json")
+}
+func (s *Store) DatabasesPath(domain string) string {
+	return filepath.Join(s.DomainDir(domain), "databases.config.json")
+}
+func (s *Store) BackupConfigPath(domain string) string {
+	return filepath.Join(s.DomainDir(domain), "backup.config.json")
+}
 func (s *Store) ServiceDir(domain, service string) string {
 	return filepath.Join(s.DomainDir(domain), service)
 }
@@ -387,6 +393,63 @@ func (s *Store) GetServicePort(domain, service string) (int, error) {
 		}
 	}
 	return 3000, nil
+}
+
+// GetServicePHPVersion returns domain/service's per-service php-fpm
+// version, or "" if it has none recorded (not a php service, service
+// not found, or still on the host-wide PHP_FPM_ENDPOINT fallback).
+func (s *Store) GetServicePHPVersion(domain, service string) string {
+	cfg, err := s.LoadServices(domain)
+	if err != nil {
+		return ""
+	}
+	if svc := cfg.FindService(service); svc != nil {
+		return svc.PHPVersion
+	}
+	return ""
+}
+
+// SetServicePHPFPM records that domain/service now has its own
+// dedicated php-fpm pool: the PHP-FPM version it runs under, the group
+// its pool user was granted document-root access through (see
+// internal/phpfpm.GrantGroupAccess), and an optional pm.max_children
+// override (0 keeps phpfpm.DefaultMaxChildren). Callers should only
+// call this after the pool, its unix user, and its group access have
+// all actually been created -- see Service.PHPVersion's doc comment
+// for why this is opt-in rather than applied retroactively.
+func (s *Store) SetServicePHPFPM(domain, service, version, poolGroup string, maxChildren int) error {
+	cfg, err := s.LoadServices(domain)
+	if err != nil {
+		return err
+	}
+	svc := cfg.FindService(service)
+	if svc == nil {
+		return fmt.Errorf("service not found: %s/%s", domain, service)
+	}
+	svc.PHPVersion = version
+	svc.PHPPoolGroup = poolGroup
+	svc.PHPMaxChildren = maxChildren
+	return s.SaveServices(cfg)
+}
+
+// ClearServicePHPFPM removes domain/service's per-service php-fpm
+// record, reverting it to the host-wide PHP_FPM_ENDPOINT fallback. Used
+// when a per-service pool is torn down (e.g. `wor service remove`) --
+// it does not itself remove the pool file, unix user, or group access;
+// callers are expected to have already done that via internal/phpfpm.
+func (s *Store) ClearServicePHPFPM(domain, service string) error {
+	cfg, err := s.LoadServices(domain)
+	if err != nil {
+		return err
+	}
+	svc := cfg.FindService(service)
+	if svc == nil {
+		return fmt.Errorf("service not found: %s/%s", domain, service)
+	}
+	svc.PHPVersion = ""
+	svc.PHPPoolGroup = ""
+	svc.PHPMaxChildren = 0
+	return s.SaveServices(cfg)
 }
 
 func (s *Store) ListHostsForService(domain, service string) ([]string, error) {

@@ -53,9 +53,9 @@ func TestParseSampleEmpty(t *testing.T) {
 
 func TestParseSystemdUint(t *testing.T) {
 	cases := []struct {
-		in      string
-		want    uint64
-		wantOK  bool
+		in     string
+		want   uint64
+		wantOK bool
 	}{
 		{"1500000000", 1500000000, true},
 		{"0", 0, true},
