@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"wor/internal/domainmodel"
+	"wor/internal/hostsfile"
 	"wor/internal/osutil"
 	"wor/internal/phpfpm"
 	"wor/internal/pm2"
@@ -239,8 +240,26 @@ func (a *App) cmdCreate(args []string) error {
 			}
 			preferredHost = a.promptPreferredWebsiteAddress(host, aliasHost)
 			a.Store.AddHostToService(domain, service, aliasHost)
-			if wizard.DomainType == "local" && wizard.AutoConfigured {
-				a.Store.SetServiceDomainMetadata(domain, service, wizard.DomainType, "127.0.0.1 "+aliasHost)
+			if wizard.DomainType == "local" {
+				// The primary host's hosts-file entry was already
+				// added (or explicitly declined/manual) by
+				// runHostDomainWizard above -- the alias needs the
+				// same treatment, since it's a distinct hostname the
+				// OS resolver has never heard of. Only auto-write it
+				// here if the primary host was auto-configured too;
+				// otherwise follow the same manual-instructions path
+				// configureLocalHostsEntry takes when declined.
+				if wizard.AutoConfigured {
+					if err := hostsfile.Add(aliasHost); err != nil {
+						a.warn("could not add hosts entry for alias %s (%s): %s", aliasHost, osutil.ElevationHint(), err)
+					} else {
+						a.ok("hosts entry added for alias: %s", aliasHost)
+						a.Store.SetServiceDomainMetadata(domain, service, wizard.DomainType, "127.0.0.1 "+aliasHost)
+					}
+				} else {
+					a.warn("Add this manually:")
+					fmt.Fprintf(a.Out, "  127.0.0.1 %s\n", aliasHost)
+				}
 			}
 			provider, err := a.Provider()
 			if err != nil {

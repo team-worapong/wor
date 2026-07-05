@@ -32,7 +32,7 @@ AI Agent ไม่มีสิทธิ์
 ## Project Information
 
 Project Name:
-WOR Runtime Management
+WOR Runtime Manager
 
 Development Language:
 Go

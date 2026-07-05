@@ -26,8 +26,12 @@ OUTPUT_FILE="${OUTPUT_DIR}/wor_${TIMESTAMP}.zip"
 echo "==> Packaging"
 echo "    Root   : $ROOT_DIR"
 
-echo "==> Checking code"
+echo "==> Checking"
+go fmt ./...
 go vet ./...
+
+echo "==> Running tests"
+go test ./...
 
 mkdir -p "$OUTPUT_DIR"
 rm -f "$OUTPUT_FILE"

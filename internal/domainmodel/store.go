@@ -97,8 +97,15 @@ func (s *Store) LoadBackupConfig(domain string) (*BackupConfig, error) {
 }
 
 // MakeDomainFiles ensures the domain directory and its three config
-// files exist, matching lib/paths.sh make_domain_files().
+// files exist, matching lib/paths.sh make_domain_files(). Store is the
+// internal foundation layer every command builds on -- it validates the
+// domain slug itself rather than trusting callers (e.g. cmdDomain) to
+// have already done so, so a stray "../"-style or otherwise malformed
+// domain id can never reach the filesystem.
 func (s *Store) MakeDomainFiles(domain string) error {
+	if err := RequireSlug(domain); err != nil {
+		return err
+	}
 	if err := osutil.EnsureDir(s.DomainDir(domain)); err != nil {
 		return err
 	}

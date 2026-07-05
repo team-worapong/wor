@@ -39,17 +39,17 @@ func TestCmdServiceStartStopRestartLogsErrorOnMissingService(t *testing.T) {
 
 func TestRequireServiceExists(t *testing.T) {
 	app := newTestServiceApp(t)
-	if err := app.Store.MakeDomainFiles("shop.example.com"); err != nil {
+	if err := app.Store.MakeDomainFiles("shop-example-com"); err != nil {
 		t.Fatalf("MakeDomainFiles: %v", err)
 	}
-	if err := app.Store.AddService("shop.example.com", "webapp", "", 3000, "node", ""); err != nil {
+	if err := app.Store.AddService("shop-example-com", "webapp", "", 3000, "node", ""); err != nil {
 		t.Fatalf("AddService: %v", err)
 	}
 
-	if err := app.requireServiceExists("shop.example.com", "webapp"); err != nil {
+	if err := app.requireServiceExists("shop-example-com", "webapp"); err != nil {
 		t.Errorf("requireServiceExists on a real service: unexpected error: %v", err)
 	}
-	if err := app.requireServiceExists("shop.example.com", "missing"); err == nil {
+	if err := app.requireServiceExists("shop-example-com", "missing"); err == nil {
 		t.Error("requireServiceExists on a registered domain but missing service: expected an error, got nil")
 	}
 	if err := app.requireServiceExists("nonexistent-domain.com", "app"); err == nil {

@@ -344,8 +344,34 @@ func grepDirsForPattern(dirs []string, keyword, host string) bool {
 			if err != nil {
 				continue
 			}
-			text := string(data)
-			if strings.Contains(text, keyword) && strings.Contains(text, host) {
+			if directiveHasHost(string(data), keyword, host) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// directiveHasHost reports whether text contains a keyword directive
+// (server_name / ServerName / ServerAlias) whose value list contains
+// host as an exact entry -- not merely as a substring. A plain
+// strings.Contains(text, host) check would wrongly match an apex host
+// like "example.test" against a subdomain's config that merely
+// mentions "app.example.test" on its server_name/ServerName line,
+// since "example.test" is a substring of "app.example.test". Values
+// are matched per line, split on whitespace (and a trailing ';'),
+// which is how nginx/apache actually list multiple hostnames on one
+// directive.
+func directiveHasHost(text, keyword, host string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		idx := strings.Index(line, keyword)
+		if idx < 0 {
+			continue
+		}
+		rest := line[idx+len(keyword):]
+		for _, tok := range strings.Fields(rest) {
+			tok = strings.Trim(tok, ";")
+			if tok == host {
 				return true
 			}
 		}

@@ -262,7 +262,10 @@ pm.max_spare_servers = 3
 // php-fpm only if validation passed. On validation failure the
 // just-written pool file is removed again, so a bad pool config is
 // never left half-applied (and never risks taking down every other
-// pool sharing the same php-fpm master on the next real reload).
+// pool sharing the same php-fpm master on the next real reload). The
+// same rollback applies if reload() itself fails: a config the running
+// master never actually picked up has no business lingering on disk
+// looking like a live pool.
 func WritePool(p Pool) error {
 	if osutil.IsWindows() {
 		return fmt.Errorf("per-service php-fpm pools are not supported on Windows")
@@ -275,7 +278,11 @@ func WritePool(p Pool) error {
 		osutil.RemoveFilePrivileged(path)
 		return fmt.Errorf("php-fpm config test failed after writing pool %s, rolled back: %w", PoolName(p.Domain, p.Service), err)
 	}
-	return reload(p.Version)
+	if err := reload(p.Version); err != nil {
+		osutil.RemoveFilePrivileged(path)
+		return fmt.Errorf("php-fpm reload failed after writing pool %s, rolled back: %w", PoolName(p.Domain, p.Service), err)
+	}
+	return nil
 }
 
 // RemovePool removes domain/service's pool file (if present) and

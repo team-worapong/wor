@@ -43,10 +43,10 @@ func TestCmdRunNoEnabledServices(t *testing.T) {
 
 func TestCmdRunStaticServiceOK(t *testing.T) {
 	app := newTestRunApp(t)
-	if err := app.Store.MakeDomainFiles("shop.example.com"); err != nil {
+	if err := app.Store.MakeDomainFiles("shop-example-com"); err != nil {
 		t.Fatalf("MakeDomainFiles: %v", err)
 	}
-	if err := app.Store.AddService("shop.example.com", "landing", "", 0, "static", ""); err != nil {
+	if err := app.Store.AddService("shop-example-com", "landing", "", 0, "static", ""); err != nil {
 		t.Fatalf("AddService(landing): %v", err)
 	}
 
@@ -54,7 +54,7 @@ func TestCmdRunStaticServiceOK(t *testing.T) {
 		t.Fatalf("cmdRun: %v", err)
 	}
 	out := app.Out.(*bytes.Buffer).String()
-	if !strings.Contains(out, "shop.example.com/landing") {
+	if !strings.Contains(out, "shop-example-com/landing") {
 		t.Errorf("expected landing service in output, got:\n%s", out)
 	}
 	if !strings.Contains(out, "1/1 services running (0 failed)") {
@@ -64,13 +64,13 @@ func TestCmdRunStaticServiceOK(t *testing.T) {
 
 func TestCmdRunSkipsDisabledServices(t *testing.T) {
 	app := newTestRunApp(t)
-	if err := app.Store.MakeDomainFiles("shop.example.com"); err != nil {
+	if err := app.Store.MakeDomainFiles("shop-example-com"); err != nil {
 		t.Fatalf("MakeDomainFiles: %v", err)
 	}
-	if err := app.Store.AddService("shop.example.com", "landing", "", 0, "static", ""); err != nil {
+	if err := app.Store.AddService("shop-example-com", "landing", "", 0, "static", ""); err != nil {
 		t.Fatalf("AddService(landing): %v", err)
 	}
-	cfg, err := app.Store.LoadServices("shop.example.com")
+	cfg, err := app.Store.LoadServices("shop-example-com")
 	if err != nil {
 		t.Fatalf("LoadServices: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestRunServicePHPPoolVersionNotDetected(t *testing.T) {
 	app := newTestRunApp(t)
 	svc := domainmodel.Service{Name: "cms", Enabled: true, Type: "php", PHPVersion: "8.3"}
 
-	err := app.runService("shop.example.com", svc)
+	err := app.runService("shop-example-com", svc)
 	if err == nil {
 		t.Fatal("expected an error when the recorded PHP version isn't detected on this host")
 	}
@@ -111,7 +111,7 @@ func TestRunServiceLegacyPHPIsNoop(t *testing.T) {
 	// path, which wor never manages the lifecycle of.
 	svc := domainmodel.Service{Name: "cms", Enabled: true, Type: "php"}
 
-	if err := app.runService("shop.example.com", svc); err != nil {
+	if err := app.runService("shop-example-com", svc); err != nil {
 		t.Fatalf("legacy php service should be a no-op, got: %v", err)
 	}
 }

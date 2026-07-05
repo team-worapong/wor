@@ -29,25 +29,25 @@ func newTestServiceStatusApp(t *testing.T) *App {
 func TestCmdServiceStatusGroupsAndSkipsDisabled(t *testing.T) {
 	app := newTestServiceStatusApp(t)
 
-	if err := app.Store.MakeDomainFiles("shop.example.com"); err != nil {
+	if err := app.Store.MakeDomainFiles("shop-example-com"); err != nil {
 		t.Fatalf("MakeDomainFiles: %v", err)
 	}
-	if err := app.Store.AddService("shop.example.com", "webapp", "", 3000, "node", ""); err != nil {
+	if err := app.Store.AddService("shop-example-com", "webapp", "", 3000, "node", ""); err != nil {
 		t.Fatalf("AddService(webapp): %v", err)
 	}
-	if err := app.Store.AddService("shop.example.com", "cms", "", 0, "php", ""); err != nil {
+	if err := app.Store.AddService("shop-example-com", "cms", "", 0, "php", ""); err != nil {
 		t.Fatalf("AddService(cms): %v", err)
 	}
-	if err := app.Store.AddService("shop.example.com", "landing", "", 0, "static", ""); err != nil {
+	if err := app.Store.AddService("shop-example-com", "landing", "", 0, "static", ""); err != nil {
 		t.Fatalf("AddService(landing): %v", err)
 	}
-	if err := app.Store.AddService("shop.example.com", "archived", "", 0, "static", ""); err != nil {
+	if err := app.Store.AddService("shop-example-com", "archived", "", 0, "static", ""); err != nil {
 		t.Fatalf("AddService(archived): %v", err)
 	}
 
 	// Disable "archived" directly on disk -- disabled services must not
 	// appear anywhere in the status output.
-	cfg, err := app.Store.LoadServices("shop.example.com")
+	cfg, err := app.Store.LoadServices("shop-example-com")
 	if err != nil {
 		t.Fatalf("LoadServices: %v", err)
 	}
@@ -71,14 +71,14 @@ func TestCmdServiceStatusGroupsAndSkipsDisabled(t *testing.T) {
 	}
 	for _, want := range []string{
 		"PM2 (node)", "PHP-FPM (php)", "STATIC (no process)",
-		"shop.example.com/webapp", "shop.example.com/cms", "shop.example.com/landing",
+		"shop-example-com/webapp", "shop-example-com/cms", "shop-example-com/landing",
 		":3000", "n/a",
 		// The pm2/systemd sub-line: process name plus cpu/mem. pm2 isn't
 		// installed in the test environment, so pm2.List() fails and the
 		// row falls back to "not started" with "-" placeholders -- but
 		// the sub-line (with the wor_<domain>_<service> name) must still
 		// render regardless of whether pm2 itself is reachable.
-		"wor_shop.example.com_webapp", "cpu -", "mem -",
+		"wor_shop-example-com_webapp", "cpu -", "mem -",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected output to contain %q, got:\n%s", want, out)
@@ -86,7 +86,7 @@ func TestCmdServiceStatusGroupsAndSkipsDisabled(t *testing.T) {
 	}
 	// php/static services have no supervised process, so they must not
 	// get a name/cpu/mem sub-line.
-	if strings.Contains(out, "wor_shop.example.com_cms") || strings.Contains(out, "wor_shop.example.com_landing") {
+	if strings.Contains(out, "wor_shop-example-com_cms") || strings.Contains(out, "wor_shop-example-com_landing") {
 		t.Errorf("php/static rows must not have a process-name sub-line:\n%s", out)
 	}
 }
