@@ -43,12 +43,17 @@ Usage:
   wor source clone <domain>/<service> <git-url>
       (if the target already has source, it's backed up via
       "wor source backup" automatically, then replaced -- no flag needed)
-  wor source pull <domain>
-  wor source pull <domain>/<service>
+  wor source pull <domain> [--stash]
+  wor source pull <domain>/<service> [--stash]
   wor source backup <domain> [--gitignore=enable|disable]
   wor source backup <domain>/<service> [--gitignore=enable|disable]
 
-  wor deploy <host|domain/service> [--pull-only] [--no-pull] [--no-restart] [--force]
+  wor deploy <host|domain/service> [--pull-only] [--no-pull] [--no-restart] [--force] [--stash]
+  wor rollback <domain>/<service> [--yes]
+      (hard-resets the service's source to origin/<branch>, discarding
+      uncommitted local changes -- backs up via "wor source backup"
+      first; requires domain/service, never a bare domain)
+
   wor ssl issue <host> [--provider=letsencrypt|self-signed|custom|none] [--preferred=<host>]
   wor ssl renew <host>
   wor ssl status <host>

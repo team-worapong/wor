@@ -120,6 +120,8 @@ func (a *App) Run(args []string) int {
 		err = a.cmdSource(rest)
 	case "deploy":
 		err = a.cmdDeploy(rest)
+	case "rollback":
+		err = a.cmdRollback(rest)
 	case "ssl":
 		err = a.cmdSSL(rest)
 	case "info":

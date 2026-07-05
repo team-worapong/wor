@@ -257,6 +257,58 @@ func verifyZip(path string) error {
 	return nil
 }
 
+// gitPull runs `git pull` in dir, optionally stashing local changes
+// (including untracked files) first so the pull doesn't fail when the
+// working tree has uncommitted edits. Shared by `wor source pull` and
+// `wor deploy`. rollbackTarget is the domain/service form of dir for
+// pointing at `wor rollback <domain>/<service>` in error messages, or
+// "" when the caller is a bare-domain `wor source pull <domain>` --
+// rollback requires domain/service, so it's omitted from the hint in
+// that case.
+//
+// If stash is requested but the tree is already clean, git reports "No
+// local changes to save" and no pop is attempted afterward. If the pull
+// itself fails, the stash (if any) is deliberately left in place rather
+// than popped -- popping on top of a failed/conflicted pull risks
+// layering one conflict on another, so the caller is told to resolve
+// things manually (or bail out entirely via `wor rollback`). If the
+// pull succeeds but popping the stash conflicts with the newly pulled
+// code, that's reported as an error too, so callers (cmdDeploy in
+// particular) know to stop rather than proceed to build/restart with a
+// half-merged tree.
+func (a *App) gitPull(dir, rollbackTarget string, stash bool) error {
+	stashed := false
+	if stash {
+		out, err := gitOutput(dir, "stash", "push", "-u", "-m", "wor-auto-stash")
+		if err != nil {
+			return fmt.Errorf("git stash failed: %w", err)
+		}
+		stashed = !strings.Contains(out, "No local changes to save")
+	}
+
+	rollbackHint := ""
+	if rollbackTarget != "" {
+		rollbackHint = fmt.Sprintf(", or discard everything and reset to origin with `wor rollback %s`", rollbackTarget)
+	}
+
+	cmd := exec.Command("git", "pull")
+	cmd.Dir = dir
+	cmd.Stdout, cmd.Stderr = a.Out, a.Err
+	if err := cmd.Run(); err != nil {
+		if stashed {
+			return fmt.Errorf("git pull failed: %w (local changes are stashed -- resolve manually with `git stash pop` in %s%s)", err, dir, rollbackHint)
+		}
+		return err
+	}
+
+	if stashed {
+		if popOut, err := gitOutput(dir, "stash", "pop"); err != nil {
+			return fmt.Errorf("git pull succeeded but `git stash pop` failed (likely a conflict) in %s: %s -- resolve manually%s", dir, popOut, rollbackHint)
+		}
+	}
+	return nil
+}
+
 func (a *App) cmdSource(args []string) error {
 	if len(args) < 2 {
 		a.usage()
@@ -294,10 +346,11 @@ func (a *App) cmdSource(args []string) error {
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 			return a.errf("not a git repository: %s", dir)
 		}
-		cmd := exec.Command("git", "pull")
-		cmd.Dir = dir
-		cmd.Stdout, cmd.Stderr = a.Out, a.Err
-		return cmd.Run()
+		rollbackTarget := ""
+		if service != "" {
+			rollbackTarget = target
+		}
+		return a.gitPull(dir, rollbackTarget, fl.Has("stash"))
 
 	case "clone":
 		if !osutil.Exists("git") {

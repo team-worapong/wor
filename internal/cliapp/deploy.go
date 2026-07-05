@@ -45,6 +45,7 @@ func (a *App) cmdDeploy(args []string) error {
 	noPull := fl.Has("no-pull")
 	noRestart := fl.Has("no-restart")
 	force := fl.Has("force")
+	stash := fl.Has("stash")
 
 	resolved := target
 	if !strings.Contains(target, "/") {
@@ -70,10 +71,7 @@ func (a *App) cmdDeploy(args []string) error {
 
 	before, _ := gitOutput(serviceDir, "rev-parse", "HEAD")
 	if !noPull {
-		cmd := exec.Command("git", "pull")
-		cmd.Dir = serviceDir
-		cmd.Stdout, cmd.Stderr = a.Out, a.Err
-		if err := cmd.Run(); err != nil {
+		if err := a.gitPull(serviceDir, resolved, stash); err != nil {
 			return err
 		}
 	}
