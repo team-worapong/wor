@@ -49,10 +49,10 @@ Usage:
   wor source backup <domain>/<service> [--gitignore=enable|disable]
 
   wor deploy <host|domain/service> [--pull-only] [--no-pull] [--no-restart] [--force]
-  wor ssl issue <host> [--provider=letsencrypt|self-signed|custom|none]
+  wor ssl issue <host> [--provider=letsencrypt|self-signed|custom|none] [--preferred=<host>]
   wor ssl renew <host>
   wor ssl status <host>
-  wor ssl remove <host>
+  wor ssl remove <host> [--yes]
   wor ssl install <host> --cert=/path/fullchain.pem --key=/path/privkey.pem
   wor info <host|domain/service>
 
