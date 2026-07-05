@@ -109,6 +109,25 @@ func (a *App) cmdDeploy(args []string) error {
 		}
 	}
 
+	// python mirrors node's "did the dependency manifest change" check --
+	// requirements.txt in the diff between before/after triggers a pip
+	// install, same gating (changed only, no --force) as node's npm ci.
+	reqPath := filepath.Join(serviceDir, "requirements.txt")
+	if _, err := os.Stat(reqPath); err == nil && changed {
+		diffOut, _ := gitOutput(serviceDir, "diff", "--name-only", before, after)
+		for _, f := range strings.Split(diffOut, "\n") {
+			if f == "requirements.txt" {
+				cmd := exec.Command(pythonBinary(), "-m", "pip", "install", "-r", "requirements.txt")
+				cmd.Dir = serviceDir
+				cmd.Stdout, cmd.Stderr = a.Out, a.Err
+				if err := cmd.Run(); err != nil {
+					return err
+				}
+				break
+			}
+		}
+	}
+
 	// go has no equivalent of node's "did package.json change" heuristic
 	// -- an updated source file with no dependency-manifest change would
 	// otherwise never get rebuilt. Per the go/python/systemd redesign,

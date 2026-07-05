@@ -50,12 +50,31 @@ func (a *App) requireGoRuntime() error {
 	return nil
 }
 
+// pythonBinary resolves which python interpreter to invoke for python
+// templates: python3 preferred, falling back to python. Shared by
+// requirePythonRuntime (existence + pip check), systemdUnitFor
+// (ExecStart), and cmdDeploy (pip install step) so all three agree on
+// the same interpreter.
+func pythonBinary() string {
+	if p := osutil.Which("python3"); p != "" {
+		return p
+	}
+	if p := osutil.Which("python"); p != "" {
+		return p
+	}
+	return "python3"
+}
+
 // requirePythonRuntime is the python equivalent of requireGoRuntime.
 // Unlike go, python needs no build step, but the same process-provider
-// runtime (systemd or PM2) must be present.
+// runtime (systemd or PM2) must be present, and pip must be available
+// since cmdDeploy uses it to install requirements.txt changes.
 func (a *App) requirePythonRuntime() error {
 	if !commandExists("python3") && !commandExists("python") {
 		return a.errf("template requires Python. Missing: python3. Install it, then run: wor doctor")
+	}
+	if err := exec.Command(pythonBinary(), "-m", "pip", "--version").Run(); err != nil {
+		return a.errf("template requires pip (python3 -m pip). Missing: pip. Install it, then run: wor doctor")
 	}
 	if osutil.IsLinux() && !commandExists("systemctl") {
 		return a.errf("template requires systemd (systemctl not found) on Linux. Install it, then run: wor doctor")
@@ -186,13 +205,7 @@ func (a *App) systemdUnitFor(domain, service, template, entry string) systemd.Un
 	dir := a.Store.ServiceDir(domain, service)
 	execStart := filepath.Join(dir, entry)
 	if domainmodel.PythonTemplates[template] {
-		python := "python3"
-		if p := osutil.Which("python3"); p != "" {
-			python = p
-		} else if p := osutil.Which("python"); p != "" {
-			python = p
-		}
-		execStart = python + " " + filepath.Join(dir, entry)
+		execStart = pythonBinary() + " " + filepath.Join(dir, entry)
 	}
 	env := map[string]string{}
 	if cfg, err := a.Store.LoadServices(domain); err == nil {
