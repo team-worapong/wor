@@ -37,7 +37,7 @@ func WriteState(sslRoot, host, provider, cert, key, autoRenew string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(stateFile(sslRoot, host), data, 0o600)
+	return osutil.WriteFileAtomic(stateFile(sslRoot, host), data, 0o600)
 }
 
 // LoadState returns (state, true, nil) if a certificate is on record

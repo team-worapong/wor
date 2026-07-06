@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # scripts/build.sh
 #
-# Release build helper for wor. Writes to dist/wor-<os>-<arch>[.exe],
+# Release build helper for wor. Writes to dist/bin/wor-<os>-<arch>[.exe],
 # matching the naming convention documented in README.md's GOOS/GOARCH
-# matrix.
+# matrix. (Raw build output lives under dist/bin/ specifically so
+# scripts/release.sh can put its packaged zips under dist/release/
+# without the two colliding in the same directory.)
 #
 # Usage:
 #   ./scripts/build.sh                  # build for this machine's OS/arch
@@ -77,7 +79,7 @@ build_one() {
   if [ "$goos_value" = "windows" ]; then
     bin_name="${bin_name}.exe"
   fi
-  local out_path="$ROOT_DIR/dist/$bin_name"
+  local out_path="$ROOT_DIR/dist/bin/$bin_name"
 
   echo "==> Building"
   echo "    Target : $goos_value/$goarch_value"
@@ -88,7 +90,7 @@ build_one() {
   #echo "==> go build ./cmd/wor"
   GOOS="$goos_value" GOARCH="$goarch_value" go build -o "$out_path" ./cmd/wor
 
-  echo "[OK] Build complete: ./dist/$bin_name"
+  echo "[OK] Build complete: ./dist/bin/$bin_name"
 }
 
 case "${1:-}" in
@@ -113,7 +115,7 @@ case "${1:-}" in
     build_one windows windows amd64
 
     echo
-    echo "[OK] Release build complete: $ROOT_DIR/dist"
+    echo "[OK] Release build complete: $ROOT_DIR/dist/bin"
     exit 0
     ;;
   --*)

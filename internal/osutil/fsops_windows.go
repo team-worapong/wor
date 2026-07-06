@@ -18,8 +18,10 @@ func ensureDirPrivileged(_ string) error {
 
 func writeFilePrivilegedFallback(path string, data []byte) error {
 	// One retry in case the failure was transient (e.g. AV lock); if it
-	// still fails, tell the caller to elevate.
-	if err := os.WriteFile(path, data, 0o644); err == nil {
+	// still fails, tell the caller to elevate. Uses the same atomic
+	// write+rename as the primary (unprivileged) attempt in
+	// WriteFilePrivileged, for the same corruption-on-crash reason.
+	if err := WriteFileAtomic(path, data, 0o644); err == nil {
 		return nil
 	}
 	return errors.New("file not writable; " + ElevationHint())

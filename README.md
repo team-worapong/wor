@@ -33,12 +33,14 @@ go build -o wor ./cmd/wor
 Cross-compile for other platforms from any machine with Go installed:
 
 ```bash
-GOOS=linux   GOARCH=amd64 go build -o dist/wor-linux-amd64     ./cmd/wor
-GOOS=linux   GOARCH=arm64 go build -o dist/wor-linux-arm64     ./cmd/wor
-GOOS=darwin  GOARCH=arm64 go build -o dist/wor-macos-arm64     ./cmd/wor
-GOOS=darwin  GOARCH=amd64 go build -o dist/wor-macos-amd64     ./cmd/wor
-GOOS=windows GOARCH=amd64 go build -o dist/wor-windows-amd64.exe ./cmd/wor
+GOOS=linux   GOARCH=amd64 go build -o dist/bin/wor-linux-amd64     ./cmd/wor
+GOOS=linux   GOARCH=arm64 go build -o dist/bin/wor-linux-arm64     ./cmd/wor
+GOOS=darwin  GOARCH=arm64 go build -o dist/bin/wor-macos-arm64     ./cmd/wor
+GOOS=darwin  GOARCH=amd64 go build -o dist/bin/wor-macos-amd64     ./cmd/wor
+GOOS=windows GOARCH=amd64 go build -o dist/bin/wor-windows-amd64.exe ./cmd/wor
 ```
+
+(`scripts/build.sh --release` does this for you and also packages a distributable zip via `scripts/release.sh` -- raw binaries land in `dist/bin/`, packaged zips in `dist/release/`.)
 
 ## Commands
 

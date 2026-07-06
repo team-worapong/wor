@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"wor/internal/osutil"
 )
 
 // Save writes the resolved settings back to c.ConfigFile in the same
@@ -44,7 +46,7 @@ func (c *Config) Save() error {
 	line("pm2_version", c.PM2.Version)
 	line("git_bin", c.Git.Bin)
 	line("git_version", c.Git.Version)
-	return os.WriteFile(c.ConfigFile, b, 0o600)
+	return osutil.WriteFileAtomic(c.ConfigFile, b, 0o600)
 }
 
 // SaveHostEnv writes $WOR_HOME/configs/host.env, matching
@@ -70,5 +72,5 @@ func SaveHostEnv(path, hostProvider string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(content), 0o644)
+	return osutil.WriteFileAtomic(path, []byte(content), 0o644)
 }

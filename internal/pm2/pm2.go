@@ -93,7 +93,7 @@ func WriteEcosystem(store *domainmodel.Store, domain string) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(EcosystemPath(store.DomainDir(domain)), data, 0o644)
+	return osutil.WriteFileAtomic(EcosystemPath(store.DomainDir(domain)), data, 0o644)
 }
 
 // scriptAndInterpreter maps a service's entry point to PM2's

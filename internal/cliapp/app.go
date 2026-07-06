@@ -15,6 +15,7 @@ import (
 	"wor/internal/hostprovider"
 	"wor/internal/osutil"
 	"wor/internal/version"
+	"wor/internal/worlock"
 )
 
 // Version and ProductName are re-exported from internal/version, which
@@ -88,6 +89,17 @@ func (a *App) Run(args []string) int {
 		return 1
 	}
 	cmd, rest := args[0], args[1:]
+
+	if commandNeedsLock(cmd, rest) {
+		lock, err := worlock.Acquire(a.Cfg.WorHome)
+		if err != nil {
+			fmt.Fprintf(a.Err, "ERROR: %s\n", err)
+			fmt.Fprintln(a.Err, "Another wor command appears to be running against the same WOR_HOME. Wait for it to finish and try again.")
+			return 1
+		}
+		defer lock.Release()
+	}
+
 	var err error
 	switch cmd {
 	case "version", "--version", "-v":
@@ -139,4 +151,28 @@ func (a *App) Run(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// commandNeedsLock decides whether Run should hold the $WOR_HOME
+// advisory lock (see internal/worlock) for the duration of cmd/rest.
+// Default is "yes, lock it" -- almost every subcommand reads and/or
+// writes services.config.json/databases.config.json/the PM2 ecosystem
+// file/vhost configs/etc., and misclassifying one of those as
+// lock-free would silently reopen the exact race this lock exists to
+// close. Only two kinds of commands are excluded:
+//   - version/help: never touch WOR_HOME at all.
+//   - `service logs` / `host logs`: these can tail/follow indefinitely
+//     (pm2 logs, journalctl -f, ...), so holding an exclusive lock for
+//     their whole runtime would block every other wor command on the
+//     host for as long as someone is watching logs.
+func commandNeedsLock(cmd string, rest []string) bool {
+	switch cmd {
+	case "version", "--version", "-v", "help", "-h", "--help", "":
+		return false
+	case "service", "host":
+		if len(rest) > 0 && rest[0] == "logs" {
+			return false
+		}
+	}
+	return true
 }

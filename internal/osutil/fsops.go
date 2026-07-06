@@ -22,14 +22,68 @@ func EnsureDir(dir string) error {
 	return nil
 }
 
+// WriteFileAtomic writes data to path by first writing to a temporary
+// file in path's own directory, then renaming it into place. Rename is
+// atomic on POSIX filesystems (and same-volume on Windows), so a crash
+// or kill partway through writing can never leave path half-written --
+// any reader either sees the old content in full or the new content in
+// full, never a mix. The temp file is deliberately created in the same
+// directory as path (not os.TempDir()) so the final rename can never
+// cross a filesystem boundary, which would silently turn "atomic
+// rename" into a non-atomic copy on some platforms/setups.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := EnsureDir(dir); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".wor-tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	renamed := false
+	defer func() {
+		if !renamed {
+			os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	// Sync before rename so the data is actually on disk before the
+	// directory entry is retargeted -- otherwise a crash right after
+	// rename could still leave path pointing at a file whose content
+	// never made it past the page cache.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	renamed = true
+	return nil
+}
+
 // WriteFilePrivileged writes data to path, creating parent directories
 // as needed and escalating privileges on Unix if a direct write fails.
-// Mirrors lib/paths.sh write_file_privileged().
+// Mirrors lib/paths.sh write_file_privileged(). Uses WriteFileAtomic for
+// the unprivileged attempt so a crash mid-write can't corrupt an
+// existing file; the privileged fallback does the same atomic
+// write+rename, just executed inside the elevated shell (see
+// writeFilePrivilegedFallback).
 func WriteFilePrivileged(path string, data []byte) error {
 	if err := EnsureDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, data, 0o644); err == nil {
+	if err := WriteFileAtomic(path, data, 0o644); err == nil {
 		return nil
 	}
 	if err := writeFilePrivilegedFallback(path, data); err != nil {
