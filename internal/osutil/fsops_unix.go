@@ -4,6 +4,8 @@ package osutil
 
 import (
 	"bytes"
+	"fmt"
+	"os"
 	"strings"
 )
 
@@ -56,4 +58,41 @@ func removeFilePrivilegedFallback(path string) error {
 		return err
 	}
 	return cmd.Run()
+}
+
+// ClaimOwnership makes dir writable by whichever user is currently
+// running wor, escalating via `sudo chown` if it isn't already. This
+// exists specifically for WOR_HOME's own top-level directories (see
+// cliapp.ensureRootDirs and worlock.Acquire): those two places are the
+// ones that hit "permission denied" when WOR_HOME (default /opt/wor,
+// under root-owned /opt) either got created root-owned by
+// ensureDirPrivileged's own `sudo mkdir`, or was simply left
+// root-owned by something else entirely -- e.g. a prior install of the
+// old shell-script wor-cli, which is the actual real-world case this
+// was first found from.
+//
+// Deliberately NOT recursive: a WOR_HOME subtree can legitimately be
+// owned by a different, per-service system user on purpose (see the
+// per-service PHP-FPM isolation design under domains/<domain>/<service>),
+// and a recursive chown here would silently undo that every time this
+// runs. Callers pass one specific directory at a time -- the ones
+// ensureRootDirs() itself creates/manages directly -- never an
+// arbitrary subtree.
+//
+// The common case, where dir is already writable (freshly created
+// unprivileged, or already fixed by an earlier call), is a silent
+// no-op: no sudo prompt at all.
+func ClaimOwnership(dir string) error {
+	if IsWritableDir(dir) {
+		return nil
+	}
+	uid, gid := os.Getuid(), os.Getgid()
+	cmd, err := SudoCommand("chown", fmt.Sprintf("%d:%d", uid, gid), dir)
+	if err != nil {
+		return err
+	}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("cannot chown %s to the current user: %w (%s)", dir, err, ElevationHint())
+	}
+	return nil
 }

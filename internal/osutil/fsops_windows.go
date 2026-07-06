@@ -33,3 +33,14 @@ func removeFilePrivilegedFallback(path string) error {
 	}
 	return errors.New("file not removable; " + ElevationHint())
 }
+
+// ClaimOwnership is a no-op on Windows: there is no sudo-style
+// escalation to chown a directory mid-process (see SudoCommand above),
+// and Windows ACLs work differently from POSIX uid/gid ownership
+// anyway. If WOR_HOME genuinely isn't writable here, that surfaces
+// through the normal EnsureDir/WriteFilePrivileged ElevationHint path
+// instead, telling the user to re-open their terminal as
+// Administrator.
+func ClaimOwnership(_ string) error {
+	return nil
+}

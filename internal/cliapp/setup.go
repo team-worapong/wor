@@ -14,13 +14,32 @@ import (
 
 // ensureRootDirs creates every base WOR_HOME directory and the
 // host.env scaffold, matching lib/paths.sh ensure_root_dirs().
+//
+// Each directory also gets osutil.ClaimOwnership right after
+// EnsureDir, so it ends up owned by whoever is actually running `wor`
+// setup, not left root-owned. This closes a real permission-denied bug
+// found running on Debian: EnsureDir escalates via `sudo mkdir` when a
+// directory doesn't exist yet under a root-owned parent (WOR_HOME
+// defaults to /opt/wor, and /opt itself is root-owned), which leaves
+// the new directory owned by root; a later unprivileged `wor` command
+// then can't open $WOR_HOME/.wor.lock (see worlock.Acquire) or write
+// into these directories at all. The same fix also self-heals a
+// WOR_HOME that was left root-owned by something else entirely -- e.g.
+// a prior install of the old shell-script wor-cli -- since
+// ClaimOwnership runs unconditionally here, not just right after a
+// fresh mkdir. ClaimOwnership is a no-op (no sudo prompt) whenever the
+// directory is already writable, which is the common case on every
+// re-run of `wor setup`.
 func (a *App) ensureRootDirs() error {
 	for _, d := range []string{
-		a.Cfg.WorHome, a.Cfg.Domains, a.Cfg.Backups,
+		a.Cfg.WorHome, a.Cfg.Domains, a.Cfg.Backups, a.Cfg.Configs,
 		filepath.Join(a.Cfg.Configs, "database"), a.Cfg.Logs, a.Cfg.SSL,
 		filepath.Join(a.Cfg.WorHome, "tmp"), filepath.Join(a.Cfg.WorHome, "scripts"), filepath.Join(a.Cfg.WorHome, "bin"),
 	} {
 		if err := osutil.EnsureDir(d); err != nil {
+			return err
+		}
+		if err := osutil.ClaimOwnership(d); err != nil {
 			return err
 		}
 	}

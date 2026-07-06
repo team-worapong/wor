@@ -68,6 +68,31 @@ Options:
 EOF
 }
 
+# prompt_line PROMPT DEFAULT
+# Prints a reply on stdout, echoing PROMPT and reading a line of input
+# from /dev/tty rather than plain stdin (fd 0). This matters because
+# install.sh is designed to also run via the documented
+# `curl -fsSL .../installer.sh | bash` flow: installer.sh downloads and
+# extracts the release, then does `exec ./install.sh`. By that point
+# bash has already consumed the entire piped stream as installer.sh's
+# own script text, so fd 0 is at EOF -- any plain `read` here would
+# get empty input immediately and (under `set -e`) abort the script.
+# /dev/tty talks to the real controlling terminal directly, bypassing
+# that. If no terminal is attached at all (e.g. a fully headless/CI
+# invocation with stdin/stdout both redirected away from a tty),
+# /dev/tty won't be readable either -- in that case this falls back to
+# DEFAULT rather than hanging or letting `set -e` kill the script.
+prompt_line() {
+  local prompt="$1" default_reply="$2" reply
+  if [ -r /dev/tty ]; then
+    read -r -p "$prompt" reply < /dev/tty || reply="$default_reply"
+  else
+    echo "${prompt}(no terminal attached, using default: '${default_reply}')" >&2
+    reply="$default_reply"
+  fi
+  printf '%s' "$reply"
+}
+
 # ---- defaults ---------------------------------------------------------
 
 HOST_PROVIDER="nginx"
@@ -170,6 +195,100 @@ fi
 
 echo "==> Detected: ${PRETTY_NAME:-${ID:-unknown}} (family: $OS_FAMILY)"
 
+# ---- detect + optionally remove a pre-existing wor installation --------
+
+# Not apt/dnf-specific, so this runs once here rather than inside
+# install_debian()/install_rhel() -- whichever family branch eventually
+# runs after this shares the same detection/removal step.
+#
+# Two things are checked independently:
+#   - the operator's ~/.wor/config (the shell-script wor-cli this may be
+#     replacing used the same path convention)
+#   - /opt/wor, the default production WOR_HOME on Linux
+# $SUDO_USER is used only to know *whose* home to look in -- this script
+# itself always runs as root, but the config file that matters belongs
+# to whoever actually runs `wor` day to day.
+OPERATOR_HOME=""
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+  OPERATOR_HOME="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)"
+fi
+
+OLD_CONFIG=""
+if [ -n "$OPERATOR_HOME" ] && [ -f "$OPERATOR_HOME/.wor/config" ]; then
+  OLD_CONFIG="$OPERATOR_HOME/.wor/config"
+fi
+
+OLD_WORHOME=""
+if [ -d /opt/wor ]; then
+  OLD_WORHOME="/opt/wor"
+fi
+
+# Distinguish "this machine still has the old shell-script wor-cli"
+# (the RESET/REMOVE questions below exist for exactly that one-time
+# migration) from "this machine already has *this* Go-based wor
+# installed, and install.sh is just being re-run to update it to a
+# newer release". Without this check, an existing config + WOR_HOME
+# look identical in both cases, so every routine update re-run would
+# re-ask the same migration questions forever. A compiled Go binary
+# starts with the 4-byte ELF magic number; the old shell-script
+# wor-cli is a plain text file starting with a #! shebang line --
+# reading the first 4 bytes is enough to tell them apart without
+# depending on the external `file` command, which isn't guaranteed
+# present on a minimal image.
+EXISTING_WOR_BIN=""
+if [ -x "${INSTALL_DIR}/wor" ]; then
+  EXISTING_WOR_BIN="${INSTALL_DIR}/wor"
+elif command -v wor >/dev/null 2>&1; then
+  EXISTING_WOR_BIN="$(command -v wor)"
+fi
+
+IS_GO_BUILD=0
+if [ -n "$EXISTING_WOR_BIN" ]; then
+  case "$(head -c4 "$EXISTING_WOR_BIN" 2>/dev/null)" in
+    $'\x7fELF') IS_GO_BUILD=1 ;;
+  esac
+fi
+
+if [ -n "$OLD_CONFIG" ] || [ -n "$OLD_WORHOME" ]; then
+  if [ "$IS_GO_BUILD" -eq 1 ]; then
+    echo "==> Existing wor (Go build) found at $EXISTING_WOR_BIN -- treating this as an"
+    echo "    update, not a migration from the old shell-script wor-cli. Skipping the"
+    echo "    config/WOR_HOME reset questions."
+    echo
+  else
+    echo "==> Found an existing wor installation:"
+    [ -n "$OLD_CONFIG" ] && echo "    Config file : $OLD_CONFIG"
+    [ -n "$OLD_WORHOME" ] && echo "    WOR_HOME    : $OLD_WORHOME"
+    echo
+    echo "Remove the old config so wor starts fresh? (domains/backups/logs/ssl"
+    echo "under WOR_HOME are NOT touched by this step -- that's asked separately"
+    echo "below.)"
+    confirm_reset="$(prompt_line "Type RESET to confirm, or press Enter to keep it: " "")"
+    if [ "$confirm_reset" = "RESET" ]; then
+      if [ -n "$OLD_CONFIG" ]; then
+        rm -f "$OLD_CONFIG"
+        echo "[OK] Removed $OLD_CONFIG"
+      fi
+      if [ -n "$OLD_WORHOME" ]; then
+        echo
+        echo "Also completely remove WOR_HOME ($OLD_WORHOME) -- including any"
+        echo "deployed sites, source/database backups, and SSL certs under it?"
+        echo "This cannot be undone."
+        confirm_remove="$(prompt_line "Type \"REMOVE $OLD_WORHOME\" to confirm, or press Enter to keep it: " "")"
+        if [ "$confirm_remove" = "REMOVE $OLD_WORHOME" ]; then
+          rm -rf "$OLD_WORHOME"
+          echo "[OK] Removed $OLD_WORHOME"
+        else
+          echo "Keeping $OLD_WORHOME as-is."
+        fi
+      fi
+    else
+      echo "Keeping existing config as-is."
+    fi
+    echo
+  fi
+fi
+
 # ---- family-specific install ------------------------------------------
 
 install_debian() {
@@ -178,14 +297,24 @@ install_debian() {
     exit 1
   fi
 
-  echo "==> apt-get update"
-  apt-get update -qq
-
+  # Deliberately just the OS-default package for each runtime -- no
+  # version pinning, no PPAs/NodeSource/Remi-style third-party repos.
+  # Whatever version Debian's own repos currently consider current is
+  # what gets installed; anyone who needs a different/newer version is
+  # expected to set that up manually afterward, not have this script
+  # decide for them.
+  #
+  # Notably this means no separate "npm" package: on Debian, "nodejs"
+  # already bundles its own npm, and the standalone "npm" binary
+  # package is a legacy, separately-built npm assembled from dozens of
+  # individually packaged node-* libraries -- it actively Conflicts
+  # with the bundled one and (as of trixie) has its own broken
+  # dependency chain besides. Installing "nodejs" alone is enough for
+  # both `node` and `npm` to work.
   local packages=(
     git
     golang-go
     nodejs
-    npm
     python3
     python3-pip
     php-fpm
@@ -219,11 +348,65 @@ install_debian() {
     packages+=(redis-server)
   fi
 
-  echo "==> Installing: ${packages[*]}"
-  DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+  # Report installed-vs-missing before touching apt at all (dpkg-query
+  # reads the local package database only, no network/apt-get-update
+  # needed for this part) -- this is also what makes it possible to
+  # only ever apt-get install the *missing* subset below, never the
+  # whole list. That distinction matters: apt-get install on an
+  # already-installed package is normally a no-op, but if a newer
+  # version exists in the repo it will happily upgrade it -- which
+  # would be silently changing something the user (or the old
+  # shell-script wor-cli, or a manual install) already set up. Only
+  # ever touching packages that aren't installed at all is a stronger
+  # guarantee than "never remove": it also means never modifying
+  # anything already present.
+  echo "==> Checking installed runtimes"
+  local missing=() pkg version
+  for pkg in "${packages[@]}"; do
+    version="$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)"
+    if [ -n "$version" ]; then
+      printf "    %-24s: installed (%s)\n" "$pkg" "$version"
+    else
+      printf "    %-24s: not installed\n" "$pkg"
+      missing+=("$pkg")
+    fi
+  done
+  echo
 
-  echo "==> Installing PM2 (npm -g)"
-  npm install -g pm2
+  if [ "${#missing[@]}" -eq 0 ]; then
+    echo "All recommended packages are already installed -- nothing to do."
+  else
+    echo "wor would install: ${missing[*]}"
+    echo "wor will never remove, downgrade, or upgrade anything already on this system --"
+    echo "only the packages listed above (currently missing) would be touched."
+    echo
+    # Default reply ("") falls into the ""|y|Y|yes... branch below, i.e.
+    # a headless run with no tty attached at all installs the missing
+    # packages automatically -- matching this script's old unconditional
+    # behavior before this confirmation existed, so unattended
+    # `curl | bash` automation keeps working unchanged.
+    confirm_install="$(prompt_line "Install the packages above now? [Y/n] " "")"
+    case "$confirm_install" in
+      ""|y|Y|yes|Yes|YES)
+        echo "==> apt-get update"
+        apt-get update -qq
+        echo "==> Installing: ${missing[*]}"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"
+        ;;
+      *)
+        echo "Skipping package installation. 'wor doctor' will report the packages"
+        echo "above as missing until you install them yourself."
+        ;;
+    esac
+  fi
+
+  if command -v npm >/dev/null 2>&1; then
+    echo "==> Installing PM2 (npm -g)"
+    npm install -g pm2
+  else
+    echo "WARNING: npm not found -- skipping PM2 install (needed for node services)." >&2
+    echo "Install Node.js, then run: npm install -g pm2" >&2
+  fi
 
   # Debian 12+ marks the system Python as "externally managed" (PEP
   # 668), which makes a bare `pip install` fail everywhere, including
@@ -334,16 +517,21 @@ fi
 
 echo
 echo "[OK] Install complete. wor is ready."
-"${INSTALL_DIR}/wor" version || true
 echo
 # Deliberately just a suggestion, not auto-run: wor refuses to run at
-# all when invoked as root via sudo (osutil.IsSudoElevated() in
-# internal/cliapp/app.go: "do not run wor via sudo"), and this script
-# itself has to run as root for apt/systemctl. Trying to guess the
-# right non-root user to drop to (via $SUDO_USER) and run these for
-# them adds a fair amount of edge-case handling for little benefit --
-# simpler and more predictable to just tell the user to run them
-# themselves, as whichever normal user will actually operate wor.
-echo "Next, as the (non-root) user who will operate wor:"
-echo "  wor doctor   # confirm every runtime above was detected correctly"
-echo "  wor setup    # configure WOR_HOME, host provider, SSL, etc."
+# all when invoked as root via sudo -- osutil.IsSudoElevated() in
+# internal/cliapp/app.go blocks *every* subcommand under that
+# condition, including harmless read-only ones like `wor version`, and
+# this script itself has to run as root for apt/systemctl. An earlier
+# version of this script ran `wor version` directly right here as a
+# sanity check -- that's exactly the case IsSudoElevated blocks, so it
+# always printed "do not run wor via sudo" instead of the version info.
+# Trying to guess the right non-root user to drop to (via $SUDO_USER)
+# and run these for them adds a fair amount of edge-case handling for
+# little benefit -- simpler and more predictable to just tell the user
+# to run them themselves, as whichever normal user will actually
+# operate wor.
+echo "Next, as the (non-root) user who will operate wor, run these in order:"
+echo "  1. wor version   # confirm the binary installed correctly"
+echo "  2. wor doctor    # confirm every runtime above was detected correctly"
+echo "  3. wor setup     # configure WOR_HOME, host provider, SSL, etc."

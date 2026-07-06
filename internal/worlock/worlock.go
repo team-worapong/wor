@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"wor/internal/osutil"
 )
 
 // fileName is the lock file's name inside $WOR_HOME. Its content is
@@ -59,6 +61,20 @@ func Acquire(worHome string) (*Handle, error) {
 	}
 	path := filepath.Join(worHome, fileName)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil && os.IsPermission(err) {
+		// WOR_HOME itself can still be root-owned here even after
+		// cliapp.ensureRootDirs's own osutil.ClaimOwnership fix (e.g. a
+		// WOR_HOME that already existed, root-owned, from before that
+		// fix shipped, and hasn't had `wor setup` re-run against it
+		// yet). This is a defensive second line of fixing the same
+		// problem, scoped to worHome itself (not recursive -- see
+		// ClaimOwnership's own doc comment for why): claim it, then
+		// retry the open exactly once. Most invocations should never
+		// reach this branch at all.
+		if claimErr := osutil.ClaimOwnership(worHome); claimErr == nil {
+			f, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("cannot open lock file %s: %w", path, err)
 	}

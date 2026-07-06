@@ -63,6 +63,21 @@ func TestWriteFileAtomicLeavesNoTempFiles(t *testing.T) {
 	}
 }
 
+// ClaimOwnership's escalation branch shells out to real `sudo`, so
+// (like ensureDirPrivileged/writeFilePrivilegedFallback/
+// removeFilePrivilegedFallback) it isn't exercised by an automated
+// unit test -- there's no way to safely fake "this directory is
+// root-owned" without already being root. What is safely testable
+// without invoking sudo at all is the fast path every normal `wor
+// setup` run actually takes: a directory that's already writable by
+// the current process should be a silent no-op.
+func TestClaimOwnershipNoopWhenAlreadyWritable(t *testing.T) {
+	dir := t.TempDir()
+	if err := ClaimOwnership(dir); err != nil {
+		t.Fatalf("ClaimOwnership on an already-writable dir should be a no-op, got: %v", err)
+	}
+}
+
 func TestWriteFilePrivilegedUnprivilegedPathSucceeds(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nested", "file.txt")
