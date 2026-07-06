@@ -19,6 +19,11 @@ func gitOutput(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func hasBuildScript(dir string) bool {
 	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
 	if err != nil {
@@ -83,18 +88,39 @@ func (a *App) cmdDeploy(args []string) error {
 		return nil
 	}
 
+	// --force skips the "did the dependency manifest change" diff check
+	// for both npm and pip below. That's what makes `wor rollback` and
+	// `wor source clone` work when they delegate here with --no-pull
+	// --force: in both cases before == after (nothing was pulled *by
+	// deploy*), so the changed-manifest heuristic would never fire, yet
+	// dependencies are exactly what may be missing or stale (a fresh
+	// clone has no node_modules at all; a rollback may have reset
+	// package-lock.json to an older revision than what's installed).
 	pkgPath := filepath.Join(serviceDir, "package.json")
-	if _, err := os.Stat(pkgPath); err == nil && changed {
-		diffOut, _ := gitOutput(serviceDir, "diff", "--name-only", before, after)
-		for _, f := range strings.Split(diffOut, "\n") {
-			if f == "package.json" || f == "package-lock.json" || f == "npm-shrinkwrap.json" {
-				cmd := exec.Command("npm", "ci")
-				cmd.Dir = serviceDir
-				cmd.Stdout, cmd.Stderr = a.Out, a.Err
-				if err := cmd.Run(); err != nil {
-					return err
+	if _, err := os.Stat(pkgPath); err == nil && (changed || force) {
+		installDeps := force
+		if !installDeps {
+			diffOut, _ := gitOutput(serviceDir, "diff", "--name-only", before, after)
+			for _, f := range strings.Split(diffOut, "\n") {
+				if f == "package.json" || f == "package-lock.json" || f == "npm-shrinkwrap.json" {
+					installDeps = true
+					break
 				}
-				break
+			}
+		}
+		if installDeps {
+			// npm ci requires a lockfile; fall back to npm install for
+			// repos that don't commit one.
+			npmArgs := []string{"ci"}
+			if !fileExists(filepath.Join(serviceDir, "package-lock.json")) &&
+				!fileExists(filepath.Join(serviceDir, "npm-shrinkwrap.json")) {
+				npmArgs = []string{"install"}
+			}
+			cmd := exec.Command("npm", npmArgs...)
+			cmd.Dir = serviceDir
+			cmd.Stdout, cmd.Stderr = a.Out, a.Err
+			if err := cmd.Run(); err != nil {
+				return err
 			}
 		}
 	}
@@ -109,19 +135,25 @@ func (a *App) cmdDeploy(args []string) error {
 
 	// python mirrors node's "did the dependency manifest change" check --
 	// requirements.txt in the diff between before/after triggers a pip
-	// install, same gating (changed only, no --force) as node's npm ci.
+	// install, same gating (changed, or forced) as node's npm ci above.
 	reqPath := filepath.Join(serviceDir, "requirements.txt")
-	if _, err := os.Stat(reqPath); err == nil && changed {
-		diffOut, _ := gitOutput(serviceDir, "diff", "--name-only", before, after)
-		for _, f := range strings.Split(diffOut, "\n") {
-			if f == "requirements.txt" {
-				cmd := exec.Command(pythonBinary(), "-m", "pip", "install", "-r", "requirements.txt")
-				cmd.Dir = serviceDir
-				cmd.Stdout, cmd.Stderr = a.Out, a.Err
-				if err := cmd.Run(); err != nil {
-					return err
+	if _, err := os.Stat(reqPath); err == nil && (changed || force) {
+		installReqs := force
+		if !installReqs {
+			diffOut, _ := gitOutput(serviceDir, "diff", "--name-only", before, after)
+			for _, f := range strings.Split(diffOut, "\n") {
+				if f == "requirements.txt" {
+					installReqs = true
+					break
 				}
-				break
+			}
+		}
+		if installReqs {
+			cmd := exec.Command(pythonBinary(), "-m", "pip", "install", "-r", "requirements.txt")
+			cmd.Dir = serviceDir
+			cmd.Stdout, cmd.Stderr = a.Out, a.Err
+			if err := cmd.Run(); err != nil {
+				return err
 			}
 		}
 	}

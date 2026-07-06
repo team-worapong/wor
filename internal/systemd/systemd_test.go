@@ -51,6 +51,37 @@ func TestParseSampleEmpty(t *testing.T) {
 	}
 }
 
+func TestParseDiagState(t *testing.T) {
+	out := "ActiveState=failed\nSubState=failed\nResult=oom-kill\nNRestarts=7\nExecMainStatus=137\n"
+	d := parseDiagState(out)
+	if d.ActiveState != "failed" || d.SubState != "failed" {
+		t.Errorf("state = %s/%s, want failed/failed", d.ActiveState, d.SubState)
+	}
+	if d.Result != "oom-kill" {
+		t.Errorf("Result = %q, want oom-kill", d.Result)
+	}
+	if d.NRestarts != 7 {
+		t.Errorf("NRestarts = %d, want 7", d.NRestarts)
+	}
+	if d.ExecMainStatus != 137 {
+		t.Errorf("ExecMainStatus = %d, want 137", d.ExecMainStatus)
+	}
+}
+
+func TestParseDiagStateTolerant(t *testing.T) {
+	// Missing/garbled properties must not panic or pollute other fields.
+	d := parseDiagState("ActiveState=active\nNRestarts=notanumber\nno-equals-line\n")
+	if d.ActiveState != "active" {
+		t.Errorf("ActiveState = %q, want active", d.ActiveState)
+	}
+	if d.NRestarts != 0 {
+		t.Errorf("NRestarts = %d, want 0 for unparseable value", d.NRestarts)
+	}
+	if d.Result != "" || d.ExecMainStatus != 0 {
+		t.Errorf("unset fields should stay zero, got %+v", d)
+	}
+}
+
 func TestParseSystemdUint(t *testing.T) {
 	cases := []struct {
 		in     string

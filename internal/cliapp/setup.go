@@ -165,6 +165,27 @@ func (a *App) cmdSetup(args []string) error {
 	a.ok("Config written: %s", a.Cfg.ConfigFile)
 	a.ok("WOR_HOME ready: %s", a.Cfg.WorHome)
 
+	// Refresh the provider's default vhost as the last setup step. If a
+	// previous installation (possibly with a different WOR_HOME) left a
+	// 000_wor_default.conf behind, EnsureDefaultHost detects that its
+	// document root no longer matches the current workspace and
+	// regenerates it -- otherwise unmatched-host requests would keep
+	// being served from the old, likely unreadable, path.
+	if a.Cfg.HostProviderName() != "skip" {
+		if provider, perr := a.Provider(); perr == nil {
+			if _, ok := provider.Binary(); ok {
+				switch skippedDH, regenerated, err := provider.EnsureDefaultHost(a.Store, a.Cfg.Backups, a.Cfg.Logs); {
+				case err != nil:
+					a.warn("could not ensure default host config: %s", err)
+				case regenerated:
+					a.warn("default host config pointed at a stale path (previous WOR_HOME?) -- regenerated for %s", a.Cfg.WorHome)
+				case !skippedDH:
+					a.ok("Default host configured")
+				}
+			}
+		}
+	}
+
 	if a.confirmYesDefaultNo("Would you like to create your first website? (y to run wor create)") {
 		return a.cmdCreate(nil)
 	}

@@ -334,39 +334,37 @@ func (a *App) printHostList(provider *hostprovider.Provider) error {
 		return nil
 	}
 
-	useColor := a.colorEnabled()
-	printGroup := func(label string, rows []hostListRow, isEnabled bool) {
-		fmt.Fprintln(a.Out, colorize(useColor, ansiPink, label))
-		tw := tabwriter.NewWriter(a.Out, 0, 4, 3, ' ', 0)
-		for _, row := range rows {
-			var dot string
-			if isEnabled {
-				dot = tag(useColor, ansiGreen, "●", "[on]")
-			} else {
-				dot = tag(useColor, ansiGray, "○", "[off]")
-			}
-			var sslTag string
-			if row.ssl {
-				sslTag = tag(useColor, ansiGreen, "ssl", "[ssl]")
-			} else {
-				sslTag = tag(useColor, ansiGray, "no-ssl", "[no-ssl]")
-			}
-			fmt.Fprintf(tw, "  %s\t%s\t-> %s\t%s\t%s\n", dot, row.host, row.target, row.port, sslTag)
-		}
-		tw.Flush()
-	}
+	// One flat table under a "WOR Hosts <server> (<version>)" title. The
+	// per-row checkmark carries the enabled state, so the old
+	// ENABLED/DISABLED group headers are redundant; enabled rows still
+	// sort first. Deliberate color semantics (owner decision after a
+	// real outage where all-green output coexisted with two unreachable
+	// sites): this listing reports CONFIG state only, so it uses a blue
+	// check / red cross for enabled/disabled and a plain "ssl" marker --
+	// no green anywhere, because green reads as "the site is healthy",
+	// which only `wor diagnose` actually verifies.
+	fmt.Fprintf(a.Out, "WOR Hosts %s\n\n", a.diagServerLabel())
 
-	first := true
-	if len(enabledRows) > 0 {
-		printGroup("ENABLED", enabledRows, true)
-		first = false
-	}
-	if len(disabledRows) > 0 {
-		if !first {
-			fmt.Fprintln(a.Out)
+	useColor := a.colorEnabled()
+	tw := tabwriter.NewWriter(a.Out, 0, 4, 3, ' ', 0)
+	printRows := func(rows []hostListRow, isEnabled bool) {
+		for _, row := range rows {
+			var mark string
+			if isEnabled {
+				mark = tag(useColor, ansiBlue, "✓", "[on]")
+			} else {
+				mark = tag(useColor, ansiRed, "✗", "[off]")
+			}
+			sslTag := "-"
+			if row.ssl {
+				sslTag = "ssl"
+			}
+			fmt.Fprintf(tw, "  %s\t%s\t-> %s\t%s\t%s\n", mark, row.host, row.target, row.port, sslTag)
 		}
-		printGroup("DISABLED", disabledRows, false)
 	}
+	printRows(enabledRows, true)
+	printRows(disabledRows, false)
+	tw.Flush()
 	return nil
 }
 
@@ -431,8 +429,10 @@ func (a *App) hostAdd(host string, fl flags) (hostWizardResult, error) {
 		provider.RemoveHostFiles(host)
 	}
 
-	if _, err := provider.EnsureDefaultHost(a.Store, a.Cfg.Backups, a.Cfg.Logs); err != nil {
+	if _, regenerated, err := provider.EnsureDefaultHost(a.Store, a.Cfg.Backups, a.Cfg.Logs); err != nil {
 		return hostWizardResult{}, err
+	} else if regenerated {
+		a.warn("default host config pointed at a stale path (previous WOR_HOME?) -- regenerated for the current workspace")
 	}
 
 	result, err := a.runHostDomainWizard(host, domain, service, domainType, hostsMode)

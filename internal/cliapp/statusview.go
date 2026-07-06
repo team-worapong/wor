@@ -19,6 +19,14 @@ const (
 	ansiGray   = "\x1b[90m"
 	ansiPink   = "\x1b[35m"
 
+	// ansiBlue marks *config* state (enabled/disabled checkmarks in
+	// `wor host list` / `wor service status`) -- deliberately NOT green:
+	// green reads as "healthy", and those commands report configuration
+	// and process state, not end-to-end health (that's `wor diagnose`).
+	// Owner-requested change after a real outage where all-green status
+	// output coexisted with two unreachable sites.
+	ansiBlue = "\x1b[36m"
+
 	// ansiDim is the SGR "faint" attribute (2), applied on top of the
 	// terminal's own default foreground rather than a fixed "bright
 	// black" color code (ansiGray). ansiGray renders low-contrast to the

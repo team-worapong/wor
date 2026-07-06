@@ -173,6 +173,7 @@ type ProcessInfo struct {
 	PID         int
 	Status      string // pm2's pm2_env.status: "online", "stopped", "errored", ...
 	Uptime      time.Duration
+	Restarts    int     // pm2's pm2_env.restart_time: total restarts since `pm2 start`
 	CPUPercent  float64 // pm2's own live monit.cpu reading
 	MemoryBytes int64   // pm2's own live monit.memory reading (RSS, bytes)
 }
@@ -184,8 +185,9 @@ type rawJlistEntry struct {
 	Name   string `json:"name"`
 	PID    int    `json:"pid"`
 	Pm2Env struct {
-		Status   string `json:"status"`
-		PmUptime int64  `json:"pm_uptime"` // ms since epoch: process start time
+		Status      string `json:"status"`
+		PmUptime    int64  `json:"pm_uptime"`    // ms since epoch: process start time
+		RestartTime int    `json:"restart_time"` // total restart count (despite the name)
 	} `json:"pm2_env"`
 	Monit struct {
 		CPU    float64 `json:"cpu"`    // percent, as pm2 itself computes it
@@ -227,6 +229,7 @@ func parseJlist(data []byte) (map[string]ProcessInfo, error) {
 			Name:        p.Name,
 			PID:         p.PID,
 			Status:      p.Pm2Env.Status,
+			Restarts:    p.Pm2Env.RestartTime,
 			CPUPercent:  p.Monit.CPU,
 			MemoryBytes: p.Monit.Memory,
 		}

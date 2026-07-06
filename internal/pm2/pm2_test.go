@@ -65,6 +65,34 @@ func TestParseJlist(t *testing.T) {
 	}
 }
 
+func TestParseJlistRestartCount(t *testing.T) {
+	data := []byte(`[
+		{
+			"name": "wor_shop_api",
+			"pid": 77,
+			"pm2_env": {"status": "online", "pm_uptime": 0, "restart_time": 15},
+			"monit": {"cpu": 0, "memory": 0}
+		}
+	]`)
+	procs, err := parseJlist(data)
+	if err != nil {
+		t.Fatalf("parseJlist: %v", err)
+	}
+	if got := procs["wor_shop_api"].Restarts; got != 15 {
+		t.Errorf("Restarts = %d, want 15 (from pm2_env.restart_time)", got)
+	}
+	// Absent restart_time (older pm2 payloads) must default to zero,
+	// not error -- Restarts is diagnostic garnish, not a hard field.
+	data = []byte(`[{"name": "x", "pid": 1, "pm2_env": {"status": "online", "pm_uptime": 0}, "monit": {"cpu": 0, "memory": 0}}]`)
+	procs, err = parseJlist(data)
+	if err != nil {
+		t.Fatalf("parseJlist without restart_time: %v", err)
+	}
+	if got := procs["x"].Restarts; got != 0 {
+		t.Errorf("Restarts = %d, want 0 when restart_time is absent", got)
+	}
+}
+
 func TestParseJlistInvalidJSON(t *testing.T) {
 	if _, err := parseJlist([]byte("not json")); err == nil {
 		t.Fatal("expected an error for invalid JSON, got nil")

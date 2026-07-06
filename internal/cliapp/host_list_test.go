@@ -97,42 +97,55 @@ func TestPrintHostListEnabledDisabledSSL(t *testing.T) {
 
 	out := app.Out.(*bytes.Buffer).String()
 
-	if !strings.Contains(out, "ENABLED") {
-		t.Error("expected an ENABLED section")
+	// The old ENABLED/DISABLED group headers are gone -- per-row
+	// [on]/[off] marks (plain-text fallback of the blue check / red
+	// cross; Out is a buffer, so no color) carry that state now, under
+	// a single "WOR Hosts <server>" title.
+	if !strings.Contains(out, "WOR Hosts nginx") {
+		t.Errorf("expected 'WOR Hosts nginx' title, got:\n%s", out)
 	}
-	if !strings.Contains(out, "DISABLED") {
-		t.Error("expected a DISABLED section")
+	if strings.Contains(out, "ENABLED") || strings.Contains(out, "DISABLED") {
+		t.Errorf("group headers must be gone:\n%s", out)
 	}
 	if strings.Contains(out, "000_wor_default") {
 		t.Error("default catch-all host should not be listed")
 	}
 
-	enabledIdx := strings.Index(out, "ENABLED")
-	disabledIdx := strings.Index(out, "DISABLED")
-	if enabledIdx == -1 || disabledIdx == -1 || enabledIdx > disabledIdx {
-		t.Fatalf("expected ENABLED before DISABLED, got:\n%s", out)
-	}
-	enabledSection := out[enabledIdx:disabledIdx]
-	disabledSection := out[disabledIdx:]
-
-	if !strings.Contains(enabledSection, "api.example.com") || !strings.Contains(enabledSection, "shop-example-com/api-gateway") {
-		t.Errorf("enabled section missing api.example.com -> shop-example-com/api-gateway:\n%s", enabledSection)
-	}
-	if !strings.Contains(enabledSection, "[ssl]") {
-		t.Errorf("expected [ssl] tag for api.example.com in enabled section:\n%s", enabledSection)
-	}
-	if !strings.Contains(enabledSection, "internal.local") || !strings.Contains(enabledSection, "[no-ssl]") {
-		t.Errorf("expected internal.local with [no-ssl] in enabled section:\n%s", enabledSection)
-	}
-	if !strings.Contains(enabledSection, ":8080") {
-		t.Errorf("expected :8080 port badge for api-gateway in enabled section:\n%s", enabledSection)
+	// Enabled rows sort before disabled ones.
+	apiIdx := strings.Index(out, "api.example.com")
+	orphanIdx := strings.Index(out, "orphan.example.com")
+	if apiIdx == -1 || orphanIdx == -1 || apiIdx > orphanIdx {
+		t.Fatalf("expected enabled api.example.com before disabled orphan.example.com:\n%s", out)
 	}
 
-	if !strings.Contains(disabledSection, "orphan.example.com") {
-		t.Errorf("expected orphan.example.com in disabled section:\n%s", disabledSection)
+	for _, want := range []string{
+		"[on]", "[off]",
+		"shop-example-com/api-gateway", ":8080",
+		"internal.local",
+		"-> -", // unresolved orphan host's target fallback
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected output to contain %q, got:\n%s", want, out)
+		}
 	}
-	if !strings.Contains(disabledSection, "-> -") {
-		t.Errorf("expected unresolved orphan host to show '-> -':\n%s", disabledSection)
+
+	// The ssl marker is plain text now ("ssl" / "-"): having a cert on
+	// record is config state, not proof the cert works, so it gets no
+	// green. The api row has ssl; internal.local must not.
+	apiLine, internalLine := "", ""
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "api.example.com") {
+			apiLine = line
+		}
+		if strings.Contains(line, "internal.local") {
+			internalLine = line
+		}
+	}
+	if !strings.Contains(apiLine, "ssl") {
+		t.Errorf("expected plain ssl marker on api row: %q", apiLine)
+	}
+	if strings.Contains(internalLine, "ssl") {
+		t.Errorf("internal.local must have no ssl marker: %q", internalLine)
 	}
 }
 

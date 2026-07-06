@@ -26,7 +26,7 @@ func newTestServiceStatusApp(t *testing.T) *App {
 	}
 }
 
-func TestCmdServiceStatusGroupsAndSkipsDisabled(t *testing.T) {
+func TestCmdServiceStatusGroupsAndMarksDisabled(t *testing.T) {
 	app := newTestServiceStatusApp(t)
 
 	if err := app.Store.MakeDomainFiles("shop-example-com"); err != nil {
@@ -45,8 +45,10 @@ func TestCmdServiceStatusGroupsAndSkipsDisabled(t *testing.T) {
 		t.Fatalf("AddService(archived): %v", err)
 	}
 
-	// Disable "archived" directly on disk -- disabled services must not
-	// appear anywhere in the status output.
+	// Disable "archived" directly on disk -- disabled services must
+	// still be LISTED (owner decision: hiding them made "why did my
+	// service disappear" a recurring confusion), marked with the
+	// [off] cross and a "disabled" state, but never queried.
 	cfg, err := app.Store.LoadServices("shop-example-com")
 	if err != nil {
 		t.Fatalf("LoadServices: %v", err)
@@ -66,19 +68,25 @@ func TestCmdServiceStatusGroupsAndSkipsDisabled(t *testing.T) {
 
 	out := app.Out.(*bytes.Buffer).String()
 
-	if strings.Contains(out, "archived") {
-		t.Errorf("disabled service must not appear in status output:\n%s", out)
-	}
 	for _, want := range []string{
 		"PM2 (node)", "PHP-FPM (php)", "STATIC (no process)",
 		"shop-example-com/webapp", "shop-example-com/cms", "shop-example-com/landing",
 		":3000", "n/a",
+		// The disabled service: listed with the [off] mark (plain-text
+		// fallback of the red cross; Out is a buffer, so no color) and
+		// a "disabled" state.
+		"archived", "[off]", "disabled",
+		// Enabled rows carry the [on] mark (plain-text fallback of the
+		// blue check -- config state, deliberately not a green health dot).
+		"[on]",
 		// The pm2/systemd sub-line: process name plus cpu/mem. pm2 isn't
 		// installed in the test environment, so pm2.List() fails and the
 		// row falls back to "not started" with "-" placeholders -- but
 		// the sub-line (with the wor_<domain>_<service> name) must still
 		// render regardless of whether pm2 itself is reachable.
 		"wor_shop-example-com_webapp", "cpu -", "mem -",
+		// The closing pointer to the real health check.
+		"wor health",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected output to contain %q, got:\n%s", want, out)
@@ -91,13 +99,13 @@ func TestCmdServiceStatusGroupsAndSkipsDisabled(t *testing.T) {
 	}
 }
 
-func TestCmdServiceStatusNoEnabledServices(t *testing.T) {
+func TestCmdServiceStatusNoServices(t *testing.T) {
 	app := newTestServiceStatusApp(t)
 	if err := app.cmdServiceStatus(); err != nil {
 		t.Fatalf("cmdServiceStatus: %v", err)
 	}
 	out := app.Out.(*bytes.Buffer).String()
-	if !strings.Contains(out, "No enabled services found") {
-		t.Errorf("expected 'No enabled services found', got:\n%s", out)
+	if !strings.Contains(out, "No services found") {
+		t.Errorf("expected 'No services found', got:\n%s", out)
 	}
 }

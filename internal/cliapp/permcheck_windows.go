@@ -12,6 +12,10 @@ func webServerRunUser(provider string) string { return "" }
 
 func webUserExists(name string) bool { return false }
 
+func socketDeniesUser(path, username string) bool { return false }
+
+func unixOwnerGroupMode(path string) string { return "" }
+
 func checkWorHomeReachability(a *App, webUser string) []string { return nil }
 
 func checkServiceReachability(a *App, webUser, domain, service, svcType string) []string {

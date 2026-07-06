@@ -73,6 +73,22 @@ Usage:
   wor ssl remove <host> [--yes]
   wor ssl install <host> --cert=/path/fullchain.pem --key=/path/privkey.pem
   wor info <host|domain/service>
+  wor health
+      (fleet-wide health sweep: for every enabled service, checks its
+      process/pool, port, and one real HTTP request through the web
+      server, then flags the broken ones with a pointer to
+      "wor diagnose <target>". Answers "are my services serving?" --
+      unlike "wor doctor", which answers "is this machine set up
+      right?". Read-only; exit code 1 when a problem is found, so it
+      can drive cron/monitoring.)
+  wor diagnose <host|domain/service>
+      (read-only root-cause analysis for ONE down/misbehaving service:
+      checks config, dns, web server, ssl expiry, process state, port,
+      http reachability, file permissions, disk, and logs, then prints
+      the root cause, evidence, and copy-pasteable fix commands -- it
+      never changes anything itself. Exit code 1 when a problem is
+      found. The recovery story: wor health -> wor diagnose <target>
+      -> wor run.)
 
 Environment:
   WOR_ENV=%s

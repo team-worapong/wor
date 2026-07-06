@@ -59,6 +59,35 @@ func TestPoolFileContent(t *testing.T) {
 	}
 }
 
+// TestPoolFileContentListenOwner locks the socket-permission fix: the
+// socket's listen.owner/listen.group must be settable to the web
+// server's user independently of the worker user/group -- a pool whose
+// socket only its own user can open passes every wor-side check and
+// still 502s (nginx's www-data denied on connect; real Debian host,
+// 2026-07-06).
+func TestPoolFileContentListenOwner(t *testing.T) {
+	p := Pool{
+		Domain:      "example.com",
+		Service:     "web",
+		Version:     Version{SockDir: "/run/php"},
+		User:        "wor_example.com_web",
+		Group:       "wor_example.com_web",
+		ListenOwner: "www-data",
+		ListenGroup: "www-data",
+	}
+	content := poolFileContent(p)
+	for _, want := range []string{
+		"user = wor_example.com_web",
+		"group = wor_example.com_web",
+		"listen.owner = www-data",
+		"listen.group = www-data",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("poolFileContent() missing %q, got:\n%s", want, content)
+		}
+	}
+}
+
 func TestPoolFileContentCustomMaxChildren(t *testing.T) {
 	p := Pool{Domain: "d", Service: "s", Version: Version{SockDir: "/run/php"}, MaxChildren: 20}
 	if !strings.Contains(poolFileContent(p), "pm.max_children = 20") {

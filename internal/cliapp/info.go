@@ -68,6 +68,17 @@ func (a *App) cmdInfo(args []string) error {
 	fmt.Fprintln(a.Out, "Process:")
 	printProcessInfo(a, domain, service, svc.Type, svc.PHPVersion, svc.PHPPoolGroup)
 
+	// Same Resources section as `wor health`, scoped to this one
+	// service (owner request 2026-07-07). pm2's live numbers need one
+	// jlist; only fetched when this service is actually pm2-managed.
+	var pm2Procs map[string]pm2.ProcessInfo
+	if domainmodel.ProcessProviderFor(svc.Type) == "pm2" && osutil.Exists("pm2") {
+		pm2Procs, _ = pm2.List()
+	}
+	selfRef := []domainmodel.ServiceRef{{Domain: domain, Service: *svc}}
+	host, usage := a.collectResources(selfRef, pm2Procs)
+	a.renderResourcesSection(host, usage, selfRef)
+
 	fmt.Fprintln(a.Out)
 	fmt.Fprintln(a.Out, "Reachability:")
 	printReachabilityInfo(a, domain, service, svc.Type)

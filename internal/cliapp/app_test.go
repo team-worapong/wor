@@ -25,6 +25,8 @@ func TestCommandNeedsLock(t *testing.T) {
 		{"deploy", []string{"shop.test"}, true},
 		{"run", nil, true},
 		{"doctor", nil, true},
+		{"diagnose", []string{"shop.test"}, false},
+		{"health", nil, false},
 	}
 	for _, c := range cases {
 		got := commandNeedsLock(c.cmd, c.rest)
@@ -62,6 +64,8 @@ func TestRequiresInitializedWorkspace(t *testing.T) {
 		{"rollback", true},
 		{"ssl", true},
 		{"info", true},
+		{"diagnose", true},
+		{"health", true},
 	}
 	for _, c := range cases {
 		got := requiresInitializedWorkspace(c.cmd)

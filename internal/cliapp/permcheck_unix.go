@@ -92,6 +92,72 @@ func pathBlocksTraversal(dir, username string) bool {
 	return mode&0o001 == 0
 }
 
+// socketDeniesUser reports whether username lacks WRITE permission on
+// the unix socket at path -- connect() on a unix socket requires write
+// access, so this is exactly the "can nginx actually reach php-fpm"
+// question. Same three-way owner/group/other resolution as
+// pathBlocksTraversal, on the write bits instead of execute, and the
+// same best-effort posture: any lookup failure means "not denied"
+// (advisory check, never a false alarm).
+func socketDeniesUser(path, username string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.Mode()&os.ModeSocket == 0 {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	u, err := user.Lookup(username)
+	if err != nil {
+		return false
+	}
+	mode := info.Mode().Perm()
+	uid := strconv.FormatUint(uint64(stat.Uid), 10)
+	if u.Uid == uid {
+		return mode&0o200 == 0
+	}
+	gid := strconv.FormatUint(uint64(stat.Gid), 10)
+	inGroup := u.Gid == gid
+	if !inGroup {
+		if groupIDs, err := u.GroupIds(); err == nil {
+			for _, g := range groupIDs {
+				if g == gid {
+					inGroup = true
+					break
+				}
+			}
+		}
+	}
+	if inGroup {
+		return mode&0o020 == 0
+	}
+	return mode&0o002 == 0
+}
+
+// unixOwnerGroupMode renders path's "owner:group mode" for evidence
+// lines (e.g. "wor_com-moodasoft_login:wor 0660"); best-effort, ""
+// when anything fails.
+func unixOwnerGroupMode(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return ""
+	}
+	owner := strconv.FormatUint(uint64(stat.Uid), 10)
+	if u, err := user.LookupId(owner); err == nil {
+		owner = u.Username
+	}
+	group := strconv.FormatUint(uint64(stat.Gid), 10)
+	if g, err := user.LookupGroupId(group); err == nil {
+		group = g.Name
+	}
+	return fmt.Sprintf("%s:%s %04o", owner, group, info.Mode().Perm())
+}
+
 // blockedPaths reports which of dirs (checked in order, duplicates
 // skipped) block webUser's traversal, via pathBlocksTraversal. Shared
 // by checkWorHomeReachability (every registered service, used by `wor

@@ -118,6 +118,18 @@ func (a *App) Run(args []string) int {
 		if err == nil && failed {
 			return 1
 		}
+	case "diagnose":
+		var failed bool
+		failed, err = a.cmdDiagnose(rest)
+		if err == nil && failed {
+			return 1
+		}
+	case "health":
+		var failed bool
+		failed, err = a.cmdHealth(rest)
+		if err == nil && failed {
+			return 1
+		}
 	case "env":
 		err = a.cmdEnv(rest)
 	case "clean":
@@ -165,15 +177,21 @@ func (a *App) Run(args []string) int {
 // writes services.config.json/databases.config.json/the PM2 ecosystem
 // file/vhost configs/etc., and misclassifying one of those as
 // lock-free would silently reopen the exact race this lock exists to
-// close. Only two kinds of commands are excluded:
+// close. Only three kinds of commands are excluded:
 //   - version/help: never touch WOR_HOME at all.
 //   - `service logs` / `host logs`: these can tail/follow indefinitely
 //     (pm2 logs, journalctl -f, ...), so holding an exclusive lock for
 //     their whole runtime would block every other wor command on the
 //     host for as long as someone is watching logs.
+//   - diagnose/health: strictly read-only (they never write anything --
+//     see docs/diagnose.md), and every config file they read is written
+//     atomically (osutil.WriteFileAtomic) so a concurrent writer can't
+//     hand them a torn read. Excluded so the incident-response commands
+//     are never the thing left waiting on a lock during an outage --
+//     and so a wedged/long-running other command can't block them.
 func commandNeedsLock(cmd string, rest []string) bool {
 	switch cmd {
-	case "version", "--version", "-v", "help", "-h", "--help", "":
+	case "version", "--version", "-v", "help", "-h", "--help", "", "diagnose", "health":
 		return false
 	case "service", "host":
 		if len(rest) > 0 && rest[0] == "logs" {

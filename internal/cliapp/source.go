@@ -353,54 +353,157 @@ func (a *App) cmdSource(args []string) error {
 		return a.gitPull(dir, rollbackTarget, fl.Has("stash"))
 
 	case "clone":
-		if !osutil.Exists("git") {
-			return a.errf("git is not installed (required for wor source clone)")
-		}
-		if len(rest) == 0 || rest[0] == "" {
-			return a.errf("git-url is required: wor source clone %s <git-url>", target)
-		}
-		git := rest[0]
-		domain, service, err := domainmodel.ParseTarget(target)
-		if err != nil {
-			return err
-		}
-		dest := a.Store.DomainDir(domain)
-		if service != "" {
-			dest = a.Store.ServiceDir(domain, service)
-		}
-		tmp := filepath.Join(a.Cfg.Tmp, fmt.Sprintf("wor-clone-%d", time.Now().UnixNano()))
-		cloneCmd := exec.Command("git", "clone", git, tmp)
-		cloneCmd.Stdout, cloneCmd.Stderr = a.Out, a.Err
-		if err := cloneCmd.Run(); err != nil {
-			os.RemoveAll(tmp)
-			return err
-		}
-
-		if _, err := os.Stat(dest); err == nil {
-			// Target already has source: back it up, then swap it for
-			// the freshly cloned tree. No --replace flag needed -- this
-			// is always the desired outcome, the backup is the safety
-			// net.
-			if _, err := a.sourceBackup(target, ""); err != nil {
-				os.RemoveAll(tmp)
-				return err
-			}
-			if err := replaceDir(tmp, dest); err != nil {
-				return err
-			}
-			a.ok("Cloned: %s", target)
-			return nil
-		}
-
-		os.MkdirAll(filepath.Dir(dest), 0o755)
-		if err := moveDir(tmp, dest); err != nil {
-			return err
-		}
-		a.ok("Cloned: %s", target)
-		return nil
+		return a.sourceClone(target, rest)
 
 	default:
 		a.usage()
 		return a.errf("unknown source action: %s", action)
 	}
+}
+
+// preserveDotEnv decides what happens to dest/.env before replaceDir
+// swaps dest for the freshly cloned tmp tree. A fresh clone almost
+// never contains .env (it's usually gitignored), and the pre-clone
+// source backup honors the same gitignore, so without this step the
+// clone would silently and *unrecoverably* destroy the service's
+// runtime configuration. The admin chooses:
+//
+//	keep both (default) -- the current .env stays active in the new
+//	  tree; the repo's copy, if it has one, is saved alongside as
+//	  .env.new for manual comparison/merging. Default because it can
+//	  never lose data and never surprises a running service.
+//	overwrite -- the current .env stays active; the repo's copy (if
+//	  any) is discarded.
+//	replace -- the repo's .env (or nothing, if it has none) wins; the
+//	  current .env is discarded. Requires an extra confirmation since
+//	  the backup zip may not contain .env.
+func (a *App) preserveDotEnv(dest, tmp string) error {
+	oldEnv := filepath.Join(dest, ".env")
+	info, err := os.Stat(oldEnv)
+	if err != nil {
+		return nil
+	}
+	newEnv := filepath.Join(tmp, ".env")
+	repoHasEnv := false
+	if _, err := os.Stat(newEnv); err == nil {
+		repoHasEnv = true
+	}
+
+	a.warn("==================== .env ====================")
+	a.warn(".env exists in %s", dest)
+	a.warn("A fresh clone replaces the whole tree, and the source backup")
+	a.warn("honors .gitignore -- so the current .env may NOT be in the")
+	a.warn("backup zip and can be lost permanently.")
+	if repoHasEnv {
+		a.warn("The cloned repository also contains its own .env.")
+	} else {
+		a.warn("The cloned repository does NOT contain a .env.")
+	}
+	a.warn("==============================================")
+	fmt.Fprintln(a.Err, "  1) keep both -- keep the current .env; the repo's copy (if any) is saved as .env.new")
+	fmt.Fprintln(a.Err, "  2) overwrite -- keep the current .env; the repo's copy (if any) is discarded")
+	fmt.Fprintln(a.Err, "  3) replace   -- use the repo's .env only; the current .env is DISCARDED")
+
+	for {
+		switch a.prompt("Choose 1-3 [1=keep both]: ") {
+		case "", "1", "keep-both", "keep both", "keep":
+			if repoHasEnv {
+				if err := os.Rename(newEnv, filepath.Join(tmp, ".env.new")); err != nil {
+					return fmt.Errorf("saving repo .env as .env.new: %w", err)
+				}
+				a.info("Repo's .env saved as .env.new -- compare and merge manually if needed.")
+			}
+			return copyFile(oldEnv, newEnv, info.Mode())
+		case "2", "overwrite":
+			return copyFile(oldEnv, newEnv, info.Mode())
+		case "3", "replace":
+			if !a.confirmYesDefaultNo("The current .env may not be recoverable from the backup zip. Really discard it?") {
+				continue
+			}
+			if !repoHasEnv {
+				a.warn("%s will have no .env after this clone.", dest)
+			}
+			return nil
+		default:
+			fmt.Fprintln(a.Err, "Please answer 1, 2, or 3.")
+		}
+	}
+}
+
+// offerCloneDeploy is the tail end of `wor source clone` for targets
+// that are registered services: a fresh clone has no node_modules, no
+// npm build output, and (for go templates) no compiled binary, so the
+// service cannot actually run until dependencies are installed and the
+// build steps happen. Deploy already knows how to do all of that per
+// service type, so delegate: --no-pull (the tree is already at the
+// cloned commit) and --force (deploy's before/after commit heuristic
+// sees no change when nothing was pulled, --force makes the npm
+// ci/build, pip install, and go build steps run anyway).
+func (a *App) offerCloneDeploy(domain, service, target string) error {
+	if service == "" {
+		return nil
+	}
+	cfg, err := a.Store.LoadServices(domain)
+	if err != nil || cfg.FindService(service) == nil {
+		a.info("Note: %s is not a registered service yet -- after `wor service add`, run `wor deploy %s --no-pull --force` to install dependencies and build.", target, target)
+		return nil
+	}
+	a.info("A fresh clone has no installed dependencies or build output (node_modules, go binary, ...).")
+	if a.confirmYesDefaultNo(fmt.Sprintf("Deploy %s now (install deps + build + restart)?", target)) {
+		return a.cmdDeploy([]string{target, "--no-pull", "--force"})
+	}
+	a.info("Skipped. Run `wor deploy %s --no-pull --force` before starting the service.", target)
+	return nil
+}
+
+func (a *App) sourceClone(target string, rest []string) error {
+	if !osutil.Exists("git") {
+		return a.errf("git is not installed (required for wor source clone)")
+	}
+	if len(rest) == 0 || rest[0] == "" {
+		return a.errf("git-url is required: wor source clone %s <git-url>", target)
+	}
+	git := rest[0]
+	domain, service, err := domainmodel.ParseTarget(target)
+	if err != nil {
+		return err
+	}
+	dest := a.Store.DomainDir(domain)
+	if service != "" {
+		dest = a.Store.ServiceDir(domain, service)
+	}
+	tmp := filepath.Join(a.Cfg.Tmp, fmt.Sprintf("wor-clone-%d", time.Now().UnixNano()))
+	cloneCmd := exec.Command("git", "clone", git, tmp)
+	cloneCmd.Stdout, cloneCmd.Stderr = a.Out, a.Err
+	if err := cloneCmd.Run(); err != nil {
+		os.RemoveAll(tmp)
+		return err
+	}
+
+	if _, err := os.Stat(dest); err == nil {
+		// Target already has source: back it up, then swap it for
+		// the freshly cloned tree. No --replace flag needed -- this
+		// is always the desired outcome, the backup is the safety
+		// net.
+		if _, err := a.sourceBackup(target, ""); err != nil {
+			os.RemoveAll(tmp)
+			return err
+		}
+		if err := a.preserveDotEnv(dest, tmp); err != nil {
+			os.RemoveAll(tmp)
+			return err
+		}
+		if err := replaceDir(tmp, dest); err != nil {
+			return err
+		}
+		a.ok("Cloned: %s", target)
+		return a.offerCloneDeploy(domain, service, target)
+	}
+
+	os.MkdirAll(filepath.Dir(dest), 0o755)
+	if err := moveDir(tmp, dest); err != nil {
+		return err
+	}
+	a.ok("Cloned: %s", target)
+	return a.offerCloneDeploy(domain, service, target)
 }

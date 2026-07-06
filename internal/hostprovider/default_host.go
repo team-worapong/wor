@@ -3,6 +3,7 @@ package hostprovider
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"wor/internal/domainmodel"
 	"wor/internal/osutil"
@@ -104,33 +105,56 @@ func EnsureDefaultDomain(store *domainmodel.Store, backupsDir, logsDir string) (
 
 // EnsureDefaultHost writes and enables the provider's default virtual
 // host if one isn't already active, mirroring
-// ensure_nginx_default_host()/ensure_apache_default_host(). It returns
-// (skipped, error): skipped is true when there was nothing to do
-// (binary missing, or a default host already active).
-func (p *Provider) EnsureDefaultHost(store *domainmodel.Store, backupsDir, logsDir string) (skipped bool, err error) {
+// ensure_nginx_default_host()/ensure_apache_default_host().
+//
+// A pre-existing config is not blindly reused: if it no longer
+// mentions the current default public path -- e.g. it was written by
+// a previous installation with a different WOR_HOME -- it is
+// regenerated in place. The staleness check is content-based rather
+// than "did WOR_HOME change during wor setup", so it is stateless and
+// also catches configs left behind after the old config file was
+// deleted, edited by hand, or restored from a machine backup. A
+// config that still points at the current path is left untouched, so
+// admin customizations elsewhere in the file survive.
+//
+// Returns (skipped, regenerated, error): skipped is true when there
+// was nothing to do (binary missing, or a current default host
+// already active); regenerated is true when a stale config was
+// rewritten -- callers surface that to the admin since it usually
+// means an old installation's config was silently shadowing this one.
+func (p *Provider) EnsureDefaultHost(store *domainmodel.Store, backupsDir, logsDir string) (skipped, regenerated bool, err error) {
 	publicPath, err := EnsureDefaultDomain(store, backupsDir, logsDir)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if _, ok := p.Binary(); !ok {
-		return true, nil
+		return true, false, nil
 	}
 
 	enabledFile := p.DefaultHostEnabledFile()
-	if pathExists(enabledFile) {
-		return true, nil
-	}
 	availFile := p.DefaultHostFile()
+
 	if pathExists(availFile) {
-		if err := p.EnableHost(availFile, enabledFile); err != nil {
-			return false, err
+		if defaultHostCurrent(availFile, publicPath) {
+			if pathExists(enabledFile) {
+				return true, false, nil
+			}
+			if err := p.EnableHost(availFile, enabledFile); err != nil {
+				return false, false, err
+			}
+			return false, false, p.Reload()
 		}
-		return false, p.Reload()
+		regenerated = true
+	} else if pathExists(enabledFile) {
+		// Enabled entry with no backing file in sites-available (a
+		// dangling symlink, or a stray copy on filesystems without
+		// symlinks) -- fall through and rewrite both.
+		regenerated = true
 	}
 
 	tpl, err := templates.Get(p.Name, "default.conf")
 	if err != nil {
-		return false, err
+		return false, regenerated, err
 	}
 	vars := map[string]string{
 		"DEFAULT_PUBLIC_PATH": publicPath,
@@ -140,10 +164,26 @@ func (p *Provider) EnsureDefaultHost(store *domainmodel.Store, backupsDir, logsD
 	}
 	out := render.Render(tpl, vars)
 	if err := osutil.WriteFilePrivileged(availFile, []byte(out)); err != nil {
-		return false, err
+		return false, regenerated, err
 	}
+	// EnableHost is idempotent (ln -sf semantics), so re-enabling over
+	// an existing enabled entry during regeneration is safe.
 	if err := p.EnableHost(availFile, enabledFile); err != nil {
-		return false, err
+		return false, regenerated, err
 	}
-	return false, p.Reload()
+	return false, regenerated, p.Reload()
+}
+
+// defaultHostCurrent reports whether the existing default vhost still
+// points at the current default public path (nginx `root` / apache
+// `DocumentRoot` both embed it verbatim from the template, so a plain
+// substring check covers both providers). An unreadable file counts
+// as current: better to leave a file we cannot inspect alone than to
+// clobber it based on no evidence.
+func defaultHostCurrent(file, publicPath string) bool {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return true
+	}
+	return strings.Contains(string(data), publicPath)
 }

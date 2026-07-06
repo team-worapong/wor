@@ -215,7 +215,7 @@ func (a *App) setupPHPPool(domain, service, phpVersion string) error {
 		return a.errf("PHP %s is no longer detected on this host", phpVersion)
 	}
 
-	var poolUser, group string
+	var poolUser, group, listenOwner string
 	if osutil.IsMacOS() {
 		u, g, err := phpfpm.CurrentUnixUser()
 		if err != nil {
@@ -233,12 +233,47 @@ func (a *App) setupPHPPool(domain, service, phpVersion string) error {
 			return err
 		}
 		group = g
+		// The socket's owner must be the WEB SERVER's run user, not the
+		// pool user: the socket is 0660 and nginx/apache is the process
+		// that connect()s to it. listen.owner = pool user produced a
+		// real 502 on Debian (www-data denied on the socket) while every
+		// wor-side check passed. Falls back to the pool user if the
+		// detected web user doesn't resolve to a real account (e.g. no
+		// web server installed yet) -- php-fpm refuses to start a pool
+		// whose listen.owner doesn't exist.
+		if webUser := webServerRunUser(a.Cfg.HostProviderName()); webUserExists(webUser) {
+			listenOwner = webUser
+		}
 	}
 
-	pool := phpfpm.Pool{Domain: domain, Service: service, Version: version, User: poolUser, Group: group}
+	pool := phpfpm.Pool{Domain: domain, Service: service, Version: version, User: poolUser, Group: group,
+		ListenOwner: listenOwner, ListenGroup: listenOwner}
 	if err := phpfpm.WritePool(pool); err != nil {
 		return err
 	}
+
+	// php-fpm only chown()s a pool's socket when it BINDS it: if a
+	// socket for this pool already existed (stale file from an older
+	// config), the reload WritePool just did keeps the old ownership,
+	// and the web server stays locked out (502) no matter what the
+	// fresh config says -- a full restart is what re-creates the
+	// socket (real Debian host, 2026-07-07). Detect the mismatch and
+	// offer the restart: it briefly interrupts every pool under this
+	// php-fpm master, so the admin decides.
+	if listenOwner != "" {
+		sock := phpfpm.SocketPath(version, domain, service)
+		if socketDeniesUser(sock, listenOwner) {
+			a.warn("pool socket %s is not connectable by the web server user (%s) -- stale socket ownership; php-fpm reload does not re-chown an existing socket", sock, listenOwner)
+			if a.confirmYesDefaultYes(fmt.Sprintf("Restart php-fpm %s now to re-create the socket (briefly interrupts its other pools)?", version.Number)) {
+				if err := phpfpm.Restart(version); err != nil {
+					a.warn("restart failed: %s -- run manually: sudo systemctl restart %s", err, version.ReloadUnit)
+				}
+			} else {
+				a.info("Run later: sudo systemctl restart %s", version.ReloadUnit)
+			}
+		}
+	}
+
 	return a.Store.SetServicePHPFPM(domain, service, phpVersion, group, 0)
 }
 
@@ -708,12 +743,13 @@ func portInUse(port int) bool {
 
 // statusRow is one rendered line of `wor service status`.
 type statusRow struct {
-	target string // "domain/service"
-	state  string
-	port   string
-	extra  string // "pid N" and/or uptime, space-joined
-	known  bool   // whether live process state was actually queried (pm2/systemd groups)
-	ok     bool   // true = running/active; only meaningful when known
+	target  string // "domain/service"
+	state   string
+	port    string
+	extra   string // "pid N" and/or uptime, space-joined
+	enabled bool   // config state -- drives the row's check/cross mark
+	known   bool   // whether live process state was actually queried (pm2/systemd groups)
+	ok      bool   // true = running/active; only meaningful when known
 
 	// procName/cpuStr/memStr are only set for pm2/systemd rows (php and
 	// static have no supervised process to name or measure), and render
@@ -792,9 +828,6 @@ func (a *App) cmdServiceStatus() error {
 
 	for _, ref := range refs {
 		svc := ref.Service
-		if !svc.Enabled {
-			continue
-		}
 		target := ref.Domain + "/" + svc.Name
 		portStr := "-"
 		if domainmodel.TemplateRequiresPort(svc.Type) {
@@ -803,9 +836,27 @@ func (a *App) cmdServiceStatus() error {
 			}
 		}
 
-		switch domainmodel.ProcessProviderFor(svc.Type) {
+		groupKey := domainmodel.ProcessProviderFor(svc.Type)
+		if groupKey == "" {
+			groupKey = "static"
+			if domainmodel.TemplateRequiresPHP(svc.Type) {
+				groupKey = "php"
+			}
+		}
+
+		// Disabled services are listed (owner decision: "why did my
+		// service disappear" is a recurring confusion when they're
+		// hidden) but never queried -- there is no process to ask about.
+		if !svc.Enabled {
+			groups[groupKey].rows = append(groups[groupKey].rows, statusRow{
+				target: target, state: "disabled", port: portStr,
+			})
+			continue
+		}
+
+		switch groupKey {
 		case "pm2":
-			row := statusRow{target: target, port: portStr, procName: pm2.Name(ref.Domain, svc.Name)}
+			row := statusRow{target: target, port: portStr, enabled: true, procName: pm2.Name(ref.Domain, svc.Name)}
 			if info, ok := pm2Procs[row.procName]; ok {
 				row.known = true
 				row.state = info.Status
@@ -831,7 +882,7 @@ func (a *App) cmdServiceStatus() error {
 			// The systemd unit name convention ("wor_<domain>_<service>")
 			// is identical to pm2's, just with a ".service" suffix pm2.Name
 			// doesn't have -- reuse it rather than duplicating the format.
-			row := statusRow{target: target, port: portStr, procName: pm2.Name(ref.Domain, svc.Name), cpuStr: "-", memStr: "-"}
+			row := statusRow{target: target, port: portStr, enabled: true, procName: pm2.Name(ref.Domain, svc.Name), cpuStr: "-", memStr: "-"}
 			if info, ok := systemdInfo[systemd.Ref{Domain: ref.Domain, Service: svc.Name}]; ok {
 				row.known = true
 				row.state = info.State
@@ -852,7 +903,7 @@ func (a *App) cmdServiceStatus() error {
 
 		default:
 			if domainmodel.TemplateRequiresPHP(svc.Type) {
-				row := statusRow{target: target, port: "n/a"}
+				row := statusRow{target: target, port: "n/a", enabled: true}
 				if svc.PHPVersion != "" {
 					// Dedicated per-service pool -- check this pool's
 					// own socket (phpfpm.PoolAlive) rather than
@@ -899,7 +950,7 @@ func (a *App) cmdServiceStatus() error {
 				// this row's.
 				groups["static"].rows = append(groups["static"].rows, statusRow{
 					target: target, state: "served by web server", port: "n/a",
-					known: true, ok: true,
+					enabled: true, known: true, ok: true,
 				})
 			}
 		}
@@ -913,7 +964,7 @@ func (a *App) cmdServiceStatus() error {
 		}
 	}
 	if !any {
-		fmt.Fprintln(a.Out, "No enabled services found.")
+		fmt.Fprintln(a.Out, "No services found.")
 		return nil
 	}
 
@@ -939,16 +990,28 @@ func (a *App) cmdServiceStatus() error {
 		var buf bytes.Buffer
 		tw := tabwriter.NewWriter(&buf, 0, 4, 3, ' ', 0)
 		for _, row := range g.rows {
-			var glyph string
-			switch {
-			case !row.known:
-				glyph = tag(useColor, ansiGray, "·", "[--]")
-			case row.ok:
-				glyph = tag(useColor, ansiGreen, "●", "[ok]")
-			default:
-				glyph = tag(useColor, ansiRed, "●", "[fail]")
+			// The mark carries CONFIG state only (blue check = enabled,
+			// red cross = disabled) -- deliberately no green dot: green
+			// read as "the site is healthy", which this command never
+			// verifies (that's `wor diagnose`; see the closing hint).
+			// Live process state is the STATE column instead, rendered
+			// red when an enabled service's process isn't running. It's
+			// the last column so its ANSI codes can't skew tabwriter's
+			// width calculation for anything after it.
+			var mark string
+			if row.enabled {
+				mark = tag(useColor, ansiBlue, "✓", "[on]")
+			} else {
+				mark = tag(useColor, ansiRed, "✗", "[off]")
 			}
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", glyph, row.target, row.state, row.port, row.extra)
+			state := row.state
+			switch {
+			case !row.enabled:
+				state = colorize(useColor, ansiDim, state)
+			case !row.ok:
+				state = colorize(useColor, ansiRed, state)
+			}
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", mark, row.target, row.port, row.extra, state)
 		}
 		tw.Flush()
 		lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
@@ -964,5 +1027,10 @@ func (a *App) cmdServiceStatus() error {
 			fmt.Fprintf(a.Out, "      %s\n", colorize(useColor, ansiDim, sub))
 		}
 	}
+
+	// The one-line antidote to "everything is green but the site is
+	// down": say out loud what this command does NOT check.
+	fmt.Fprintln(a.Out)
+	fmt.Fprintln(a.Out, colorize(useColor, ansiDim, "(process status only -- for end-to-end health: wor health)"))
 	return nil
 }

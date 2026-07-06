@@ -19,6 +19,7 @@ package phpfpm
 
 import (
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -250,12 +252,24 @@ const DefaultMaxChildren = 5
 
 // Pool describes one per-service php-fpm pool wor manages.
 type Pool struct {
-	Domain      string
-	Service     string
-	Version     Version
-	User        string // dedicated unix user this pool runs as, see EnsureUser
-	Group       string // group granted read access to the service's document root, see GrantGroupAccess
-	MaxChildren int    // pm.max_children; DefaultMaxChildren if <= 0
+	Domain  string
+	Service string
+	Version Version
+	User    string // dedicated unix user this pool runs as, see EnsureUser
+	Group   string // group granted read access to the service's document root, see GrantGroupAccess
+	// ListenOwner/ListenGroup are the socket file's owner/group --
+	// crucially NOT the same thing as User/Group: the socket is mode
+	// 0660, and the process that must connect() to it is the WEB SERVER
+	// (nginx/apache), not the pool's own workers. Leaving these as the
+	// pool user produced a real 502 on a real Debian host (2026-07-06):
+	// every wor check passed (wor itself could connect), but www-data
+	// couldn't. Callers set these to the web server's run user on
+	// Linux; empty falls back to User/Group (the pre-fix behavior,
+	// which is also correct on macOS where everything runs as the
+	// login user anyway).
+	ListenOwner string
+	ListenGroup string
+	MaxChildren int // pm.max_children; DefaultMaxChildren if <= 0
 }
 
 // SocketPath returns the unix socket path wor listens this pool on.
@@ -276,6 +290,13 @@ func poolFileContent(p Pool) string {
 	}
 	name := PoolName(p.Domain, p.Service)
 	sock := SocketPath(p.Version, p.Domain, p.Service)
+	listenOwner, listenGroup := p.ListenOwner, p.ListenGroup
+	if listenOwner == "" {
+		listenOwner = p.User
+	}
+	if listenGroup == "" {
+		listenGroup = p.Group
+	}
 	return fmt.Sprintf(`[%s]
 user = %s
 group = %s
@@ -288,7 +309,7 @@ pm.max_children = %d
 pm.start_servers = 2
 pm.min_spare_servers = 1
 pm.max_spare_servers = 3
-`, name, p.User, p.Group, sock, p.User, p.Group, maxChildren)
+`, name, p.User, p.Group, sock, listenOwner, listenGroup, maxChildren)
 }
 
 // WritePool writes p's pool config file, validates the resulting
@@ -331,7 +352,17 @@ func RemovePool(v Version, domain, service string) error {
 	if err := osutil.RemoveFilePrivileged(path); err != nil {
 		return err
 	}
-	return reload(v)
+	if err := reload(v); err != nil {
+		return err
+	}
+	// php-fpm drops the pool from its runtime on reload but does NOT
+	// unlink the dead pool's socket file, so /run/php/<pool>.sock would
+	// linger forever (observed on a real Debian host, 2026-07-06, after
+	// `wor service remove`). Best-effort: a leftover socket with no
+	// listener behind it is cosmetic, so a removal failure must not turn
+	// a successfully removed pool into an error.
+	osutil.RemoveFilePrivileged(SocketPath(v, domain, service))
+	return nil
 }
 
 // testConfig runs `<fpmBin> -t`, the same config-test invocation
@@ -452,6 +483,19 @@ func PoolAlive(v Version, domain, service string) bool {
 	}
 	conn, err := net.DialTimeout("unix", SocketPath(v, domain, service), poolDialTimeout)
 	if err != nil {
+		// Permission denied is NOT "pool down". Since the
+		// socket-ownership fix, pool sockets are owned by the WEB
+		// SERVER's user at mode 0660 -- which is exactly right for
+		// nginx/apache and exactly wrong for an unprivileged wor
+		// process trying to dial them (a correctly-secured pool showed
+		// up as "not accepting connections" across diagnose/health/
+		// status on a real host, 2026-07-07, while serving 200s the
+		// whole time). Denied-but-workers-exist means the pool is up;
+		// the worker check reads /proc directly, so no sudo prompt
+		// (diagnose's non-interactive rule).
+		if errors.Is(err, os.ErrPermission) {
+			return poolWorkersRunning(domain, service)
+		}
 		return false
 	}
 	conn.Close()
@@ -463,6 +507,78 @@ func PoolAlive(v Version, domain, service string) bool {
 // lifecycle end-to-end for versions it creates pools under (superseding
 // the older "php-fpm is assumed already running" invariant for that
 // case) -- see docs/services.md.
+// poolWorkersRunning reports whether any php-fpm worker process for
+// this pool exists, by scanning /proc/<pid>/cmdline for the exact
+// process title php-fpm gives its workers ("php-fpm: pool <name>").
+// Unlike fpmProcessRunning's pgrep-on-binary-path heuristic (see its
+// doc comment for why that can't find setproctitle'd processes), the
+// worker title IS the setproctitle output, so exact-matching it is
+// reliable. Linux only -- macOS has no /proc, and macOS pools run as
+// the login user so PoolAlive's dial never gets EACCES there.
+func poolWorkersRunning(domain, service string) bool {
+	return len(PoolWorkerPIDs(domain, service)) > 0
+}
+
+// PoolWorkerPIDs returns the PIDs of every php-fpm worker process
+// belonging to this pool, found by exact-matching each
+// /proc/<pid>/cmdline against the worker process title. Shared by
+// poolWorkersRunning (liveness) and the resource-usage reporting in
+// `wor health`/`wor info` (per-pool cpu/mem is the sum over these
+// workers). Linux only; nil elsewhere.
+func PoolWorkerPIDs(domain, service string) []int {
+	if !osutil.IsLinux() {
+		return nil
+	}
+	needle := "php-fpm: pool " + PoolName(domain, service)
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, e := range entries {
+		pid, convErr := strconv.Atoi(e.Name())
+		if convErr != nil {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+		if readErr != nil {
+			continue
+		}
+		title := strings.TrimRight(strings.ReplaceAll(string(data), "\x00", " "), " ")
+		if title == needle {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// Restart fully restarts this version's php-fpm master -- needed (vs
+// reload) exactly when a pool's socket OWNERSHIP must change: php-fpm
+// only chown()s a socket when it binds it, and a graceful reload keeps
+// already-bound sockets, so a listen.owner change on an existing
+// socket silently does nothing until a real restart re-creates it
+// (verified on a real Debian host, 2026-07-07). Briefly interrupts
+// every pool under this master, so callers should ask before using it.
+func Restart(v Version) error {
+	if osutil.IsWindows() {
+		return fmt.Errorf("php-fpm is not supported on Windows")
+	}
+	if osutil.IsMacOS() {
+		// brew services restart is already a full restart -- same as
+		// reload() on macOS.
+		return reload(v)
+	}
+	cmd, err := osutil.SudoCommand("systemctl", "restart", v.ReloadUnit)
+	if err != nil {
+		return err
+	}
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		return fmt.Errorf("systemctl restart %s (%s): %w: %s", v.ReloadUnit, osutil.ElevationHint(), runErr, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func Start(v Version) error {
 	if osutil.IsWindows() {
 		return fmt.Errorf("php-fpm is not supported on Windows")

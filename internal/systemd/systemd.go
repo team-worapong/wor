@@ -325,6 +325,76 @@ func cpuPercentFromDelta(first, second sampleShowProperties, interval time.Durat
 	return float64(deltaNSec) / float64(interval.Nanoseconds()) * 100, true
 }
 
+// DiagState is the failure-analysis subset of `systemctl show` that
+// `wor diagnose` needs -- unlike Info (live resource usage for status
+// rows), this answers "why is this unit not running": systemd's own
+// Result verdict ("success", "exit-code", "oom-kill", "signal",
+// "start-limit-hit", ...), the main process's last exit status, and how
+// many times systemd has auto-restarted it.
+type DiagState struct {
+	ActiveState    string // "active", "inactive", "failed", "activating", ...
+	SubState       string // "running", "dead", "auto-restart", ...
+	Result         string // why the last run ended the way it did
+	NRestarts      int
+	ExecMainStatus int // exit status of the main process's last run
+}
+
+// ShowDiagState queries domain/service's unit for DiagState. Like
+// querySample, this runs unelevated: `systemctl show` is read-only and
+// never needs root, and `wor diagnose` must stay non-interactive (no
+// confirm-once sudo prompt) so it can run from cron/monitoring.
+func ShowDiagState(domain, service string) (DiagState, error) {
+	out, err := exec.Command("systemctl", "show", Name(domain, service),
+		"--property=ActiveState,SubState,Result,NRestarts,ExecMainStatus").Output()
+	if err != nil {
+		return DiagState{}, err
+	}
+	return parseDiagState(string(out)), nil
+}
+
+// parseDiagState parses `systemctl show --property=...`'s "KEY=VALUE"
+// per-line output for ShowDiagState. Split out (like parseSample) so it
+// can be unit tested without invoking the real systemctl binary.
+func parseDiagState(out string) DiagState {
+	var d DiagState
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "ActiveState":
+			d.ActiveState = value
+		case "SubState":
+			d.SubState = value
+		case "Result":
+			d.Result = value
+		case "NRestarts":
+			if n, err := strconv.Atoi(value); err == nil {
+				d.NRestarts = n
+			}
+		case "ExecMainStatus":
+			if n, err := strconv.Atoi(value); err == nil {
+				d.ExecMainStatus = n
+			}
+		}
+	}
+	return d
+}
+
+// RecentLogs returns the last n journal lines for domain/service's
+// unit, for `wor diagnose`'s evidence gathering. Unelevated and
+// non-following (unlike Logs): reading the system journal as a normal
+// user works when that user is in the systemd-journal/adm group
+// (common on Debian for the admin account); when it isn't, the caller
+// gets an error/empty result and reports "not readable" instead of
+// triggering a sudo prompt mid-diagnosis.
+func RecentLogs(domain, service string, n int) (string, error) {
+	out, err := exec.Command("journalctl", "-u", Name(domain, service),
+		"-n", strconv.Itoa(n), "--no-pager", "--output=cat").Output()
+	return strings.TrimSpace(string(out)), err
+}
+
 // RemoveUnit stops, disables, and deletes domain/service's unit file --
 // used by `wor service remove`, `wor clean`, and `wor reset`. Stop and
 // disable failures are ignored (matching pm2.Run's "process may not
