@@ -25,14 +25,28 @@
 # together with scripts/install.sh.
 #
 # Usage:
-#   ./scripts/release.sh
+#   ./scripts/release.sh [output-name]
 #
-# Output: dist/release/wor-runtime-manager-<version>.{zip,tar.gz},
-# where <version> comes from internal/version/version.go (single
-# source of truth for the version string -- see that package's doc
-# comment). Raw per-target binaries (scripts/build.sh's own output)
-# live under dist/bin/ -- kept separate from dist/release/ so packaged
-# archives never collide with the loose binaries they're built from.
+# [output-name] is optional and overrides the archive *filenames* only
+# (not the folder name inside them -- see PKG_DIR below): e.g.
+# `./scripts/release.sh v1-b2` produces dist/release/v1-b2.zip and
+# dist/release/v1-b2.tar.gz instead of the default
+# wor-runtime-manager-<version>.{zip,tar.gz}. This matters because
+# scripts/installer.sh's documented `curl ... | bash -s -- <version>`
+# flow downloads from a fixed URL template of exactly
+# "<base-url>/<version>.tar.gz" -- there is no
+# "wor-runtime-manager-" prefix on the server side, so whatever gets
+# uploaded there has to be named to match the version tag being
+# requested (e.g. a v1.0.0 release must be uploaded as v1.0.0.tar.gz),
+# not this script's own default naming.
+#
+# Output: dist/release/<output-name-or-default>.{zip,tar.gz}, where the
+# default is wor-runtime-manager-<version> and <version> comes from
+# internal/version/version.go (single source of truth for the version
+# string -- see that package's doc comment). Raw per-target binaries
+# (scripts/build.sh's own output) live under dist/bin/ -- kept separate
+# from dist/release/ so packaged archives never collide with the loose
+# binaries they're built from.
 #
 # Can be run from any directory; it resolves and cd's into the repo
 # root first.
@@ -50,6 +64,19 @@ for tool in zip tar; do
   fi
 done
 
+if [ "$#" -gt 1 ]; then
+  echo "ERROR: too many arguments (usage: ./scripts/release.sh [output-name])" >&2
+  exit 1
+fi
+
+OUTPUT_NAME="${1:-}"
+case "$OUTPUT_NAME" in
+  */*)
+    echo "ERROR: output-name must not contain '/': $OUTPUT_NAME" >&2
+    exit 1
+    ;;
+esac
+
 VERSION_FILE="$ROOT_DIR/internal/version/version.go"
 VERSION="$(sed -nE 's/^const Number = "(.*)"$/\1/p' "$VERSION_FILE")"
 if [ -z "$VERSION" ]; then
@@ -61,8 +88,11 @@ echo "==> Building release matrix (version $VERSION)"
 "$SCRIPT_DIR/build.sh" --release
 
 PKG_NAME="wor-runtime-manager"
-ZIP_NAME="${PKG_NAME}-${VERSION}.zip"
-TARGZ_NAME="${PKG_NAME}-${VERSION}.tar.gz"
+if [ -z "$OUTPUT_NAME" ]; then
+  OUTPUT_NAME="${PKG_NAME}-${VERSION}"
+fi
+ZIP_NAME="${OUTPUT_NAME}.zip"
+TARGZ_NAME="${OUTPUT_NAME}.tar.gz"
 ZIP_PATH="$ROOT_DIR/dist/release/$ZIP_NAME"
 TARGZ_PATH="$ROOT_DIR/dist/release/$TARGZ_NAME"
 
@@ -120,17 +150,27 @@ echo "==> Compressing (tar.gz)"
 echo "    Output : $TARGZ_PATH"
 # tar preserves the executable bits chmod'd above natively on both GNU
 # tar (Linux) and BSD tar (macOS) -- no extra flags needed for that.
-# COPYFILE_DISABLE=1 is a macOS-only bsdtar/cp setting that stops it
-# from embedding Apple extended attributes (e.g. the
-# "com.apple.provenance" xattr Ventura+ attaches) as PAX extended
-# headers in the archive -- harmless on this machine either way, but
-# without it, GNU tar on the Linux/Debian install target prints a
-# "tar: Ignoring unknown extended header keyword ..." warning per file
-# when extracting. Purely cosmetic (extraction still succeeds either
-# way), but confusing enough during a fresh install that it's worth
-# not shipping. No-op on Linux, so this env var is safe to always set
-# regardless of which OS actually builds the release.
-(cd "$STAGE_DIR" && COPYFILE_DISABLE=1 tar -czf "$TARGZ_PATH" "$PKG_NAME")
+#
+# Two separate mechanisms can leak macOS-only metadata into the
+# archive, and both need to be disabled to actually stop the
+# "tar: Ignoring unknown extended header keyword
+# 'LIBARCHIVE.xattr.com.apple.provenance'" warning GNU tar prints per
+# file on the Linux/Debian install target when extracting:
+#   - COPYFILE_DISABLE=1 stops cp(1)/bsdtar's copyfile()-based AppleDouble
+#     sidecar behavior (the classic "._<name>" resource-fork files).
+#   - --no-xattrs stops bsdtar (macOS's own tar) from writing a file's
+#     actual extended attributes -- e.g. the "com.apple.provenance"
+#     xattr Ventura+ attaches to files that were downloaded/quarantined
+#     -- into the archive as LIBARCHIVE.xattr.* PAX headers in the
+#     first place. COPYFILE_DISABLE alone does NOT suppress this: a
+#     release built with only COPYFILE_DISABLE=1 (v1.0.0-b4) still
+#     produced these warnings on a real Debian 13 VM extracting it,
+#     confirming the xattr itself was still being written.
+# Both are no-ops on Linux (GNU tar already defaults to not writing
+# xattrs, and --no-xattrs is a recognized flag there too, confirmed
+# against GNU tar 1.34 -- it does not error out), so it's safe to
+# always pass them regardless of which OS actually builds the release.
+(cd "$STAGE_DIR" && COPYFILE_DISABLE=1 tar --no-xattrs -czf "$TARGZ_PATH" "$PKG_NAME")
 
 echo
 echo "[OK] Release packages ready:"
