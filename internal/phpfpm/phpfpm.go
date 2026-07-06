@@ -337,14 +337,37 @@ func RemovePool(v Version, domain, service string) error {
 // testConfig runs `<fpmBin> -t`, the same config-test invocation
 // hostprovider.DetectListenAddrs uses -- validates and exits without
 // binding anything, so it's safe even while the real php-fpm master is
-// already running. Unelevated: a config-test read doesn't need root.
+// already running.
+//
+// On Linux this needs elevation: `-t` doesn't just parse syntax, it also
+// opens the master's global error_log (e.g. /var/log/php8.4-fpm.log,
+// root-owned with restrictive perms on Debian/Ubuntu) to confirm it's
+// writable. Running it as wor's own unprivileged invoking user fails
+// with "failed to open error_log ... Permission denied" (exit status
+// 78) even when the pool file just written is perfectly valid -- which
+// then made WritePool roll back a good config. Matches
+// hostprovider/nginx.go's nginxProvider.Test(), which already elevates
+// its own `-t` on Linux for the same reason. macOS (Homebrew) typically
+// runs php-fpm and owns its logs as the invoking user, so no
+// elevation is needed there.
 func testConfig(v Version) error {
 	if v.FPMBin == "" {
 		return fmt.Errorf("php-fpm binary not found for PHP %s", v.Number)
 	}
-	out, err := exec.Command(v.FPMBin, "-t").CombinedOutput()
+	if osutil.IsMacOS() {
+		out, err := exec.Command(v.FPMBin, "-t").CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%s -t: %w: %s", v.FPMBin, err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+	cmd, err := osutil.SudoCommand(v.FPMBin, "-t")
 	if err != nil {
-		return fmt.Errorf("%s -t: %w: %s", v.FPMBin, err, strings.TrimSpace(string(out)))
+		return err
+	}
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		return fmt.Errorf("%s -t (%s): %w: %s", v.FPMBin, osutil.ElevationHint(), runErr, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

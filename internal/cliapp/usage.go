@@ -20,11 +20,14 @@ Usage:
   wor domain add <domain-id>
   wor domain remove <domain-id>
 
-  wor service add <domain>/<service> [--host=<host>] [--port=<port>] [--entry=<entry-point>] [--service-type=static|node|go|python|php] [--php-version=<version>] [--no-php-pool]
+  wor service add <domain>/<service> [--host=<host>] [--port=<port>] [--entry=<entry-point>] [--service-type=static|node|go|python|php] [--php-version=<version>] [--no-php-pool] [--no-start]
       (php services get their own dedicated php-fpm pool automatically
       when exactly one PHP-FPM version is detected on this host;
       --php-version= picks one when several are detected, --no-php-pool
-      forces the legacy shared PHP_FPM_ENDPOINT instead)
+      forces the legacy shared PHP_FPM_ENDPOINT instead. node/go/python
+      services are started automatically after being created; --no-start
+      skips that and leaves the service stopped until you run
+      "wor service start <domain>/<service>" or "wor run" yourself.)
   wor service remove <domain>/<service> [--cascade] [--yes]
   wor service start <domain>/<service>
   wor service stop <domain>/<service>

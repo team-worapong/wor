@@ -291,6 +291,26 @@ fi
 
 # ---- family-specific install ------------------------------------------
 
+# enable_and_start_unit UNIT
+# systemctl enable --now is already safe to re-run on its own (enabling
+# an already-enabled unit, or starting an already-running one, is a
+# no-op either way) -- but it still prints systemd's own
+# "Synchronizing state of <unit> with SysV service script..." /
+# "Executing: ... enable ..." boilerplate every single time, which
+# looks like real work happened on every re-run of this installer even
+# when nothing changed. Checking is-enabled/is-active first just
+# avoids that noise; it does not change what actually gets
+# enabled/started.
+enable_and_start_unit() {
+  local unit="$1"
+  if systemctl is-enabled --quiet "$unit" 2>/dev/null && systemctl is-active --quiet "$unit" 2>/dev/null; then
+    echo "==> $unit already enabled and running -- skipping"
+    return 0
+  fi
+  echo "==> Enabling + starting $unit"
+  systemctl enable --now "$unit" || true
+}
+
 install_debian() {
   if ! command -v apt-get >/dev/null 2>&1; then
     echo "ERROR: apt-get not found even though /etc/os-release looks Debian-family." >&2
@@ -400,7 +420,9 @@ install_debian() {
     esac
   fi
 
-  if command -v npm >/dev/null 2>&1; then
+  if command -v pm2 >/dev/null 2>&1; then
+    echo "==> PM2 already installed ($(pm2 --version 2>/dev/null || echo "unknown version")) -- skipping"
+  elif command -v npm >/dev/null 2>&1; then
     echo "==> Installing PM2 (npm -g)"
     npm install -g pm2
   else
@@ -418,11 +440,35 @@ install_debian() {
   # ends up running `wor deploy` later, since a per-user `pip config
   # set` would only cover whichever user runs this installer (root),
   # not the actual wor operator.
-  echo "==> Allowing system-wide pip installs (PEP 668) for wor deploy's python step"
-  cat > /etc/pip.conf <<'EOF'
+  # PIP_CONF_MARKER identifies a pip.conf this installer itself wrote,
+  # so a re-run can tell "safe to regenerate" apart from "a real
+  # /etc/pip.conf the operator set up by hand (custom index-url,
+  # proxy, etc.)". Without this distinction, blindly overwriting the
+  # file on every run (the old behavior) would silently destroy any
+  # such manual configuration. pip.conf is plain INI (Python
+  # configparser), which errors on a duplicate `[global]` section, so
+  # this deliberately does not try to merge into an existing
+  # non-wor-managed file -- that would need a real INI parser, more
+  # than this one setting is worth. If break-system-packages is
+  # already set (by us or by someone else) there's nothing to do
+  # either way.
+  local PIP_CONF="/etc/pip.conf"
+  local PIP_CONF_MARKER="# Managed by wor installer -- allows system-wide pip installs (PEP 668) for wor deploy's python step"
+  if [ -f "$PIP_CONF" ] && grep -qF "break-system-packages" "$PIP_CONF" 2>/dev/null; then
+    echo "==> System-wide pip installs already allowed ($PIP_CONF) -- skipping"
+  elif [ -f "$PIP_CONF" ] && ! grep -qF "$PIP_CONF_MARKER" "$PIP_CONF" 2>/dev/null; then
+    echo "==> $PIP_CONF already exists and wasn't created by this installer -- leaving it as-is."
+    echo "    wor deploy's python step needs this to work around PEP 668; add it yourself if needed:"
+    echo "      [global]"
+    echo "      break-system-packages = true"
+  else
+    echo "==> Allowing system-wide pip installs (PEP 668) for wor deploy's python step"
+    cat > "$PIP_CONF" <<EOF
+$PIP_CONF_MARKER
 [global]
 break-system-packages = true
 EOF
+  fi
 
   # "php*-fpm" is quoted here specifically so the *shell* never expands
   # it as a filesystem glob against the current directory -- it's
@@ -431,19 +477,18 @@ EOF
   local svc unit
   for svc in "$webserver_service" "php*-fpm"; do
     for unit in $(systemctl list-unit-files --type=service --no-legend "${svc}.service" 2>/dev/null | awk '{print $1}'); do
-      echo "==> Enabling + starting $unit"
-      systemctl enable --now "$unit" || true
+      enable_and_start_unit "$unit"
     done
   done
 
   if [ "$WITH_MYSQL" -eq 1 ]; then
-    systemctl enable --now mariadb || true
+    enable_and_start_unit mariadb
   fi
   if [ "$WITH_POSTGRES" -eq 1 ]; then
-    systemctl enable --now postgresql || true
+    enable_and_start_unit postgresql
   fi
   if [ "$WITH_REDIS" -eq 1 ]; then
-    systemctl enable --now redis-server || true
+    enable_and_start_unit redis-server
   fi
 }
 

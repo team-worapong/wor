@@ -358,6 +358,32 @@ func (a *App) systemdUnitFor(domain, service, template, entry string) systemd.Un
 	}
 }
 
+// startWrittenProcess starts domain/service's supervised process --
+// shared by `wor service start` and `wor service add`'s default
+// auto-start (see the "add" case below), so both entry points agree on
+// exactly the same start sequence. Callers must have already written
+// the pm2 ecosystem entry / systemd unit file (WriteEcosystem/
+// WriteUnit) before calling this -- it only starts what's already on
+// disk, it does not write anything itself. provider must be "pm2" or
+// "systemd" (callers get this from domainmodel.ProcessProviderFor);
+// any other value is a no-op.
+func (a *App) startWrittenProcess(domain, service, provider string) error {
+	switch provider {
+	case "pm2":
+		name := pm2.Name(domain, service)
+		if err := pm2.Run("start", pm2.EcosystemPath(a.Store.DomainDir(domain)), "--only", name); err != nil {
+			return err
+		}
+		return pm2.Save()
+	case "systemd":
+		if err := systemd.Enable(domain, service); err != nil {
+			a.warn("systemd enable failed: %s", err)
+		}
+		return systemd.Start(domain, service)
+	}
+	return nil
+}
+
 func (a *App) cmdService(args []string) error {
 	if len(args) == 0 {
 		a.usage()
@@ -464,6 +490,30 @@ func (a *App) cmdService(args []string) error {
 		default:
 			a.ok("Service ready: %s/%s (%s)", domain, service, template)
 		}
+		// Default is to bring the service up immediately after creating
+		// it -- `wor service add` on its own used to just write config
+		// and leave node/go/python services not actually running until
+		// a separate `wor service start`/`wor run`. --no-start opts back
+		// out of that (e.g. scripted provisioning that wants to
+		// configure something -- env vars, secrets -- before the process
+		// ever starts). A failed auto-start is reported but does not
+		// fail `add` itself: the service *was* successfully created
+		// (config/ecosystem/unit already written above), and returning
+		// an error here would make `add` look like it failed outright --
+		// worse, retrying it would then hit "service folder already
+		// exists" with no obvious way forward. `wor service start
+		// <domain>/<service>` remains the explicit, second-chance way to
+		// bring it up.
+		if provider := domainmodel.ProcessProviderFor(template); provider != "" && !fl.Has("no-start") {
+			if err := a.startWrittenProcess(domain, service, provider); err != nil {
+				a.warn("service created but failed to start: %s", err)
+				a.info("Run manually once fixed: wor service start %s/%s", domain, service)
+			} else {
+				a.ok("Service started: %s/%s", domain, service)
+			}
+		} else if provider != "" {
+			a.info("Service not started (--no-start). Run: wor service start %s/%s", domain, service)
+		}
 		return nil
 
 	case "remove":
@@ -543,21 +593,13 @@ func (a *App) cmdService(args []string) error {
 			if err := pm2.WriteEcosystem(a.Store, domain); err != nil {
 				return err
 			}
-			if err := pm2.Run("start", pm2.EcosystemPath(a.Store.DomainDir(domain)), "--only", name); err != nil {
-				return err
-			}
-			return pm2.Save()
 		case "systemd":
 			entry := a.Store.GetServiceEntryPoint(domain, service)
 			if err := systemd.WriteUnit(a.systemdUnitFor(domain, service, t, entry)); err != nil {
 				return err
 			}
-			if err := systemd.Enable(domain, service); err != nil {
-				a.warn("systemd enable failed: %s", err)
-			}
-			return systemd.Start(domain, service)
 		}
-		return nil
+		return a.startWrittenProcess(domain, service, provider)
 
 	case "stop":
 		if err := a.requireServiceExists(domain, service); err != nil {

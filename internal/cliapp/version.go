@@ -3,33 +3,45 @@ package cliapp
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 
 	"wor/internal/dbbackup"
 	"wor/internal/hostprovider"
 	"wor/internal/osutil"
 	"wor/internal/phpfpm"
-	"wor/internal/pm2"
 )
 
+// cmdVersion is deliberately just "did the binary install correctly"
+// (product/version/OS/distro/build target/bin path/workspace state)
+// -- it does not report on Node/npm/PM2 or any other runtime, and
+// deliberately omits WOR_HOME/Config too. Those are config/environment
+// concerns owned by `wor doctor` (which also now shows OS/Distro/Build
+// in its own Environment section) and `wor env`; install.sh's own
+// "Next steps" already documents the intended split: `wor version`
+// confirms the binary, `wor doctor` confirms every runtime and the
+// environment it's running in. Duplicating that here too just means
+// more places that can disagree or drift out of sync.
 func (a *App) cmdVersion() {
 	exe, _ := os.Executable()
 	fmt.Fprintln(a.Out, ProductName)
 	fmt.Fprintln(a.Out, strings.Repeat("-", len(ProductName)))
 	fmt.Fprintf(a.Out, "Version  : %s\n", Version)
 	fmt.Fprintf(a.Out, "OS       : %s\n", osutil.OSName())
-	fmt.Fprintf(a.Out, "WOR_HOME : %s\n", a.Cfg.WorHome)
-	fmt.Fprintf(a.Out, "Bin      : %s\n", exe)
-	fmt.Fprintf(a.Out, "Node     : %s\n", versionOrNotFound("node", "--version"))
-	fmt.Fprintf(a.Out, "npm      : %s\n", versionOrNotFound("npm", "-v"))
-	fmt.Fprintf(a.Out, "PM2      : %s\n", pm2.Version())
-}
-
-func versionOrNotFound(bin string, args ...string) string {
-	if !osutil.Exists(bin) {
-		return "not found"
+	if distro, ok := osutil.LinuxDistro(); ok {
+		fmt.Fprintf(a.Out, "Distro   : %s\n", distro)
 	}
-	return osutil.RunVersion(bin, args...)
+	// Build is the GOOS/GOARCH this binary was actually compiled for
+	// (e.g. "linux/amd64") -- useful for confirming the right one of
+	// scripts/build.sh --release's 5 cross-compiled targets got
+	// installed, distinct from OS (the host's own OS/family label).
+	fmt.Fprintf(a.Out, "Build    : %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(a.Out, "Bin      : %s\n", exe)
+	if a.workspaceInitialized() {
+		a.docOK("Workspace initialized")
+	} else {
+		a.docFail("Workspace not initialized (run: wor setup)")
+	}
 }
 
 func (a *App) cmdEnv(args []string) error {

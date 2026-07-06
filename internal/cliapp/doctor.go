@@ -2,8 +2,10 @@ package cliapp
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"wor/internal/dbbackup"
@@ -77,6 +79,10 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 
 	fmt.Fprintln(a.Out, "Environment")
 	fmt.Fprintf(a.Out, "  OS            : %s\n", osutil.OSName())
+	if distro, ok := osutil.LinuxDistro(); ok {
+		fmt.Fprintf(a.Out, "  Distro        : %s\n", distro)
+	}
+	fmt.Fprintf(a.Out, "  Build         : %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Fprintf(a.Out, "  WOR_ENV       : %s\n", a.Cfg.Env)
 	fmt.Fprintf(a.Out, "  WOR_HOME      : %s\n", a.Cfg.WorHome)
 	fmt.Fprintf(a.Out, "  Config        : %s\n", a.Cfg.ConfigFile)
@@ -209,8 +215,101 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 			a.docWarn("%s not installed", t.label)
 		}
 	}
+	fmt.Fprintln(a.Out)
+
+	// Security: neither check here ever sets fail -- both are hygiene/
+	// hardening advice, not "wor itself is broken" the way a missing
+	// runtime is. A site that 500s because of this is a real problem,
+	// but it's the deployed site that's affected, not wor's own
+	// ability to function, so this follows the same severity
+	// convention as the optional database engines/tools above (⚠, never ✗).
+	fmt.Fprintln(a.Out, "Security")
+	if osutil.IsWindows() {
+		// Unix owner/group/other permission bits don't carry the same
+		// meaning on Windows (ACLs are a completely different model),
+		// so both checks below would just be noise there -- skipped
+		// entirely rather than printing something misleading.
+		a.docOK("Permission checks skipped (Windows uses a different access-control model)")
+	} else {
+		if loose := scanLooseEnvFiles(a.Cfg.WorHome); len(loose) > 0 {
+			a.docWarn(".env file(s) readable beyond their own owner -- %d found:", len(loose))
+			for _, p := range loose {
+				fmt.Fprintf(a.Out, "      %s\n", p)
+			}
+			a.info("Fix: find %s \\( -name '.env' -o -name '.env.*' \\) -exec chmod 600 {} +", a.Cfg.WorHome)
+		} else if dirExists(a.Cfg.WorHome) {
+			a.docOK("No overly-permissive .env files found under WOR_HOME")
+		}
+
+		if provider == "nginx" || provider == "apache" {
+			switch {
+			case osutil.IsDebianFamily():
+				webUser := webServerRunUser(provider)
+				if !webUserExists(webUser) {
+					a.docWarn("could not resolve web server user %q on this system -- WOR_HOME reachability not checked", webUser)
+				} else if blocked := checkWorHomeReachability(a, webUser); len(blocked) > 0 {
+					a.docWarn("WOR_HOME not reachable by web server user %q -- %d path(s) block traversal:", webUser, len(blocked))
+					for _, p := range blocked {
+						fmt.Fprintf(a.Out, "      %s\n", p)
+					}
+					a.info("Fix: %s", worHomeReachabilityFixCommand(webUser, blocked))
+				} else {
+					a.docOK("WOR_HOME reachable by web server user (%s)", webUser)
+				}
+			case osutil.IsLinux():
+				// RHEL/CentOS/Fedora-family: not auto-checked -- wor
+				// doesn't support this family closely enough yet to be
+				// confident about the right fix (see install_rhel in
+				// scripts/install.sh), and SELinux can independently
+				// block access even when POSIX permissions are fine.
+				a.docWarn("Non-Debian Linux detected -- WOR_HOME permission issues are possible and not auto-checked here. If a static/php site 500s unexpectedly, check both regular permissions (owner/group/other) AND SELinux context (semanage fcontext / chcon) along the full WOR_HOME path")
+			default:
+				// macOS: nginx installed via Homebrew commonly runs as
+				// the logged-in user rather than a separate system
+				// account, so this class of problem is far less common
+				// there -- intentionally not checked to avoid noise for
+				// the common case.
+			}
+		}
+	}
+	fmt.Fprintln(a.Out)
 
 	return fail, nil
+}
+
+// scanLooseEnvFiles walks worHome looking for .env / .env.* files
+// (the Node/Laravel/etc. convention for secrets -- DB passwords, API
+// keys) that are readable by anyone beyond their own owner (any
+// group/other permission bit set). This is deliberately independent
+// of checkWorHomeReachability above: that one is about letting the
+// web server reach files it's *supposed* to serve; this one is a
+// file's own last line of defense regardless of how open the
+// surrounding directories end up needing to be -- opening WOR_HOME's
+// traversal permission for the web server (or, on a shared box,
+// simply placing WOR_HOME somewhere every local user can already
+// traverse, e.g. /opt) means anyone who can reach a service's
+// directory can also read a sibling service's .env unless the file
+// itself is locked down.
+func scanLooseEnvFiles(worHome string) []string {
+	var found []string
+	filepath.WalkDir(worHome, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if name != ".env" && !strings.HasPrefix(name, ".env.") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			found = append(found, path)
+		}
+		return nil
+	})
+	return found
 }
 
 func versionFlagFor(name string) string {
@@ -295,7 +394,7 @@ func (a *App) cmdClean(args []string) error {
 // cmdReset always requires typed "RESET" confirmation -- there is
 // deliberately no --yes/-y bypass. This wipes every WOR-managed
 // pm2/systemd process, host config, hosts-file entry, and the entire
-// domains/backups/logs trees; a flag that skips the prompt is too easy
+// domains/backups/logs/ssl trees; a flag that skips the prompt is too easy
 // to have sitting in a script or shell history and fire unattended for
 // something this destructive.
 func (a *App) cmdReset(args []string) error {
@@ -308,6 +407,7 @@ func (a *App) cmdReset(args []string) error {
 	fmt.Fprintf(a.Out, "  - %s/*\n", a.Cfg.Domains)
 	fmt.Fprintf(a.Out, "  - %s/*\n", a.Cfg.Backups)
 	fmt.Fprintf(a.Out, "  - %s/*\n", a.Cfg.Logs)
+	fmt.Fprintf(a.Out, "  - %s/* (SSL certs/state)\n", a.Cfg.SSL)
 	fmt.Fprintln(a.Out)
 	fmt.Fprintln(a.Out, "It will NOT remove non-WOR host configs.")
 	if !a.requireTyped("Type RESET to continue: ", "RESET") {
@@ -351,9 +451,11 @@ func (a *App) cmdReset(args []string) error {
 	os.RemoveAll(a.Cfg.Domains)
 	os.RemoveAll(a.Cfg.Backups)
 	os.RemoveAll(a.Cfg.Logs)
+	os.RemoveAll(a.Cfg.SSL)
 	os.MkdirAll(a.Cfg.Domains, 0o755)
 	os.MkdirAll(a.Cfg.Backups, 0o755)
 	os.MkdirAll(a.Cfg.Logs, 0o755)
+	os.MkdirAll(a.Cfg.SSL, 0o755)
 	if provider != nil {
 		provider.EnsureDefaultHost(a.Store, a.Cfg.Backups, a.Cfg.Logs)
 	}

@@ -305,11 +305,12 @@ func (a *App) cmdCreate(args []string) error {
 		}
 	}
 
-	if domainmodel.TemplateRequiresProcessSupervisor(template) {
-		if err := a.cmdService([]string{"start", fmt.Sprintf("%s/%s", domain, service)}); err != nil {
-			return err
-		}
-	}
+	// No separate start step here: a.cmdService(serviceArgs) above (the
+	// "add" action, called without --no-start) already starts the
+	// service itself as of the wor-service-add default-auto-start
+	// change -- calling "start" again here would just re-invoke
+	// pm2.Run("start", ...)/systemd.Start() on something already
+	// running, for no benefit.
 
 	fmt.Fprintln(a.Out)
 	fmt.Fprintln(a.Out, "WOR Service Ready")
