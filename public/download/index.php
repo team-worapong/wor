@@ -50,6 +50,14 @@ $latestTag = array_key_first($versions);
 <!doctype html>
 <html lang="en" data-bs-theme="auto">
 <head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-VPT5GEM34V"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-VPT5GEM34V');
+</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Downloads — WOR Runtime Manager</title>
@@ -95,6 +103,11 @@ $latestTag = array_key_first($versions);
         <li class="nav-item"><a class="nav-link" href="/#install">Install</a></li>
         <li class="nav-item"><a class="nav-link" href="/#quickstart">Quick start</a></li>
         <li class="nav-item"><a class="nav-link active" href="/download/"><i class="bi bi-download me-1"></i>Downloads</a></li>
+        <li class="nav-item ms-md-2">
+          <a class="btn btn-warning btn-sm fw-medium" href="https://paypal.me/TeamWorapong" target="_blank" rel="noopener">
+            <i class="bi bi-heart-fill me-1"></i>Donate
+          </a>
+        </li>
         <li class="nav-item ms-md-2">
           <button class="btn btn-outline-secondary btn-sm" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">
             <i class="bi bi-circle-half"></i>
@@ -215,7 +228,10 @@ $latestTag = array_key_first($versions);
 <footer class="border-top py-4 bg-body-tertiary">
   <div class="container d-flex flex-column flex-md-row justify-content-between align-items-center gap-2">
     <span class="text-body-secondary small"><i class="bi bi-hdd-stack me-1"></i>WOR Runtime Manager &copy; <?= date('Y') ?></span>
-    <span class="text-body-secondary small"><a href="/" class="link-secondary">Home</a></span>
+    <span class="text-body-secondary small">
+      <a href="/" class="link-secondary me-3">Home</a>
+      <a href="https://paypal.me/TeamWorapong" target="_blank" rel="noopener" class="link-secondary"><i class="bi bi-heart-fill me-1"></i>Donate</a>
+    </span>
   </div>
 </footer>
 

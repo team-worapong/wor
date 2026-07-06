@@ -24,6 +24,14 @@ if (is_dir($releasesDir)) {
 <!doctype html>
 <html lang="en" data-bs-theme="auto">
 <head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-VPT5GEM34V"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-VPT5GEM34V');
+</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WOR Runtime Manager — Manage web app runtimes under one convention</title>
@@ -90,6 +98,11 @@ if (is_dir($releasesDir)) {
         <li class="nav-item"><a class="nav-link" href="#quickstart">Quick start</a></li>
         <li class="nav-item"><a class="nav-link" href="#commands">Commands</a></li>
         <li class="nav-item"><a class="nav-link" href="/download/"><i class="bi bi-download me-1"></i>Downloads</a></li>
+        <li class="nav-item ms-md-2">
+          <a class="btn btn-warning btn-sm fw-medium" href="https://paypal.me/TeamWorapong" target="_blank" rel="noopener">
+            <i class="bi bi-heart-fill me-1"></i>Donate
+          </a>
+        </li>
         <li class="nav-item ms-md-2">
           <button class="btn btn-outline-secondary btn-sm" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">
             <i class="bi bi-circle-half"></i>
@@ -201,10 +214,25 @@ if (is_dir($releasesDir)) {
     <div class="container">
       <div class="row justify-content-center">
         <div class="col-lg-9">
-          <h2 class="fw-bold mb-1">Install on a server</h2>
-          <p class="text-body-secondary mb-4">Debian/Ubuntu are supported by the installer today. A single static Go binary — no runtime dependencies.</p>
+          <h2 class="fw-bold mb-1">Install</h2>
+          <p class="text-body-secondary mb-4">A single static Go binary — no runtime dependencies. The installer script supports Debian/Ubuntu; on macOS and Windows, install the bundled binary manually.</p>
 
-          <h5 class="mt-4"><i class="bi bi-1-circle me-2 text-primary"></i>One-liner (latest release)</h5>
+          <ul class="nav nav-tabs mb-4" id="installTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+              <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-linux" type="button" role="tab" aria-selected="true"><i class="bi bi-ubuntu me-1"></i>Linux</button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-macos" type="button" role="tab" aria-selected="false"><i class="bi bi-apple me-1"></i>macOS</button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-windows" type="button" role="tab" aria-selected="false"><i class="bi bi-windows me-1"></i>Windows</button>
+            </li>
+          </ul>
+
+          <div class="tab-content">
+          <div class="tab-pane fade show active" id="tab-linux" role="tabpanel">
+
+          <h5 class="mt-2"><i class="bi bi-1-circle me-2 text-primary"></i>One-liner (latest release)</h5>
           <div class="code-block mb-4">
             <pre><span class="prompt">$</span> curl -fsSL https://wor.worapong.com/download/installer.sh | bash</pre>
             <button class="btn btn-sm btn-copy" data-copy="curl -fsSL https://wor.worapong.com/download/installer.sh | bash" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
@@ -232,8 +260,93 @@ sudo ./install.sh" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
 
           <div class="alert alert-info d-flex gap-2" role="alert">
             <i class="bi bi-info-circle-fill"></i>
-            <div><code>install.sh</code> detects your distro, reports which runtime packages are already installed, and asks before installing only the missing ones — it never upgrades or removes anything already present.</div>
+            <div><code>install.sh</code> detects your distro (Debian/Ubuntu only for now), reports which runtime packages are already installed, and asks before installing only the missing ones — it never upgrades or removes anything already present.</div>
           </div>
+
+          </div><!-- /tab-linux -->
+
+          <div class="tab-pane fade" id="tab-macos" role="tabpanel">
+
+          <h5 class="mt-2"><i class="bi bi-1-circle me-2 text-primary"></i>Download &amp; install the binary</h5>
+          <p class="text-body-secondary small mb-2">The archive bundles binaries for every platform. Apple Silicon uses <code>wor-macos-arm64</code>; Intel Macs use <code>wor-macos-amd64</code>.</p>
+          <div class="code-block mb-4">
+            <pre><span class="prompt">$</span> curl -fsSL https://wor.worapong.com/download/releases/latest.tar.gz -o wor.tar.gz
+<span class="prompt">$</span> tar -xzf wor.tar.gz &amp;&amp; cd wor-runtime-manager
+<span class="prompt">$</span> sudo cp bin/wor-macos-arm64 /usr/local/bin/wor   <span class="cmt"># Intel: bin/wor-macos-amd64</span>
+<span class="prompt">$</span> sudo chmod +x /usr/local/bin/wor</pre>
+            <button class="btn btn-sm btn-copy" data-copy="curl -fsSL https://wor.worapong.com/download/releases/latest.tar.gz -o wor.tar.gz
+tar -xzf wor.tar.gz && cd wor-runtime-manager
+sudo cp bin/wor-macos-arm64 /usr/local/bin/wor
+sudo chmod +x /usr/local/bin/wor" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
+          </div>
+
+          <h5><i class="bi bi-2-circle me-2 text-primary"></i>Install the runtimes you need</h5>
+          <p class="text-body-secondary small mb-2">There is no automated package install on macOS — use Homebrew for whatever your services require. <code>wor doctor</code> reports exactly what's missing.</p>
+          <div class="code-block mb-4">
+            <pre><span class="prompt">$</span> brew install nginx node php go python   <span class="cmt"># pick what you need</span>
+<span class="prompt">$</span> npm install -g pm2                       <span class="cmt"># process manager for services</span></pre>
+            <button class="btn btn-sm btn-copy" data-copy="brew install nginx node php go python
+npm install -g pm2" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
+          </div>
+
+          <h5><i class="bi bi-3-circle me-2 text-primary"></i>Verify &amp; set up</h5>
+          <div class="code-block mb-4">
+            <pre><span class="prompt">$</span> wor version
+<span class="prompt">$</span> wor doctor
+<span class="prompt">$</span> wor setup</pre>
+            <button class="btn btn-sm btn-copy" data-copy="wor version
+wor doctor
+wor setup" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
+          </div>
+
+          <div class="alert alert-info d-flex gap-2" role="alert">
+            <i class="bi bi-info-circle-fill"></i>
+            <div>On macOS, <code>go</code> and <code>python</code> services run under PM2 instead of systemd, and PHP-FPM pools all run as your login user (no per-service privilege separation). Everything else works the same as on Linux.</div>
+          </div>
+
+          </div><!-- /tab-macos -->
+
+          <div class="tab-pane fade" id="tab-windows" role="tabpanel">
+
+          <h5 class="mt-2"><i class="bi bi-1-circle me-2 text-primary"></i>Download &amp; extract</h5>
+          <p class="text-body-secondary small mb-2">Grab the <code>.zip</code> from the <a href="/download/">download page</a>, or in PowerShell:</p>
+          <div class="code-block mb-4">
+            <pre><span class="prompt">PS&gt;</span> Invoke-WebRequest https://wor.worapong.com/download/releases/<?= htmlspecialchars($latestVersion) ?>.zip -OutFile wor.zip
+<span class="prompt">PS&gt;</span> Expand-Archive wor.zip -DestinationPath .
+<span class="prompt">PS&gt;</span> cd wor-runtime-manager</pre>
+            <button class="btn btn-sm btn-copy" data-copy="Invoke-WebRequest https://wor.worapong.com/download/releases/<?= htmlspecialchars($latestVersion) ?>.zip -OutFile wor.zip
+Expand-Archive wor.zip -DestinationPath .
+cd wor-runtime-manager" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
+          </div>
+
+          <h5><i class="bi bi-2-circle me-2 text-primary"></i>Put <code>wor.exe</code> on your PATH</h5>
+          <div class="code-block mb-4">
+            <pre><span class="prompt">PS&gt;</span> New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\wor\bin" | Out-Null
+<span class="prompt">PS&gt;</span> Copy-Item bin\wor-windows-amd64.exe "$env:LOCALAPPDATA\wor\bin\wor.exe"
+<span class="prompt">PS&gt;</span> [Environment]::SetEnvironmentVariable("Path", "$env:Path;$env:LOCALAPPDATA\wor\bin", "User")</pre>
+            <button class="btn btn-sm btn-copy" data-copy="New-Item -ItemType Directory -Force &quot;$env:LOCALAPPDATA\wor\bin&quot; | Out-Null
+Copy-Item bin\wor-windows-amd64.exe &quot;$env:LOCALAPPDATA\wor\bin\wor.exe&quot;
+[Environment]::SetEnvironmentVariable(&quot;Path&quot;, &quot;$env:Path;$env:LOCALAPPDATA\wor\bin&quot;, &quot;User&quot;)" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
+          </div>
+
+          <h5><i class="bi bi-3-circle me-2 text-primary"></i>Verify &amp; set up</h5>
+          <p class="text-body-secondary small mb-2">Open a new terminal so the PATH change takes effect. Managing hosts entries requires an elevated (Administrator) terminal.</p>
+          <div class="code-block mb-4">
+            <pre><span class="prompt">PS&gt;</span> wor version
+<span class="prompt">PS&gt;</span> wor doctor
+<span class="prompt">PS&gt;</span> wor setup</pre>
+            <button class="btn btn-sm btn-copy" data-copy="wor version
+wor doctor
+wor setup" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
+          </div>
+
+          <div class="alert alert-info d-flex gap-2" role="alert">
+            <i class="bi bi-info-circle-fill"></i>
+            <div>On Windows, services run under PM2 (install Node.js + <code>npm install -g pm2</code>). PHP services share a single <code>PHP_FPM_ENDPOINT</code> — there are no per-service PHP-FPM pools, since PHP-FPM has no official Windows build. <code>wor doctor</code> reports any missing runtimes.</div>
+          </div>
+
+          </div><!-- /tab-windows -->
+          </div><!-- /tab-content -->
         </div>
       </div>
     </div>
@@ -365,9 +478,22 @@ wor health" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
     <div class="container">
       <h2 class="fw-bold mb-3">Ready to try it?</h2>
       <p class="text-body-secondary mb-4">Install in under a minute, or grab a release archive.</p>
-      <div class="d-flex flex-column flex-sm-row gap-2 justify-content-center">
+      <div class="d-flex flex-column flex-sm-row gap-2 justify-content-center mb-5">
         <a href="#install" class="btn btn-primary btn-lg"><i class="bi bi-terminal me-1"></i>Install</a>
         <a href="/download/" class="btn btn-outline-secondary btn-lg"><i class="bi bi-download me-1"></i>Download <?= htmlspecialchars($latestVersion) ?></a>
+      </div>
+      <div class="row justify-content-center">
+        <div class="col-lg-6">
+          <div class="card border-warning-subtle bg-warning bg-opacity-10">
+            <div class="card-body">
+              <h5 class="mb-2"><i class="bi bi-heart-fill text-danger me-2"></i>Support this project</h5>
+              <p class="text-body-secondary mb-3">WOR is free and open. If it saves you time on your servers, a small donation helps keep development going — thank you so much for your support!</p>
+              <a class="btn btn-warning fw-medium" href="https://paypal.me/TeamWorapong" target="_blank" rel="noopener">
+                <i class="bi bi-paypal me-1"></i>Donate via PayPal
+              </a>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -380,7 +506,8 @@ wor health" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
     </span>
     <span class="text-body-secondary small">
       <a href="/download/" class="link-secondary me-3">Downloads</a>
-      <a href="#quickstart" class="link-secondary">Quick start</a>
+      <a href="#quickstart" class="link-secondary me-3">Quick start</a>
+      <a href="https://paypal.me/TeamWorapong" target="_blank" rel="noopener" class="link-secondary"><i class="bi bi-heart-fill me-1"></i>Donate</a>
     </span>
   </div>
 </footer>
