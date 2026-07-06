@@ -90,6 +90,12 @@ func (a *App) Run(args []string) int {
 	}
 	cmd, rest := args[0], args[1:]
 
+	if requiresInitializedWorkspace(cmd) && !a.workspaceInitialized() {
+		fmt.Fprintln(a.Err, "ERROR: workspace not initialized.")
+		fmt.Fprintln(a.Err, "Run `wor setup` first, then re-run this command.")
+		return 1
+	}
+
 	if commandNeedsLock(cmd, rest) {
 		lock, err := worlock.Acquire(a.Cfg.WorHome)
 		if err != nil {
@@ -173,6 +179,30 @@ func commandNeedsLock(cmd string, rest []string) bool {
 		if len(rest) > 0 && rest[0] == "logs" {
 			return false
 		}
+	}
+	return true
+}
+
+// requiresInitializedWorkspace decides whether cmd needs a fully set up
+// $WOR_HOME (see workspaceInitialized in doctor.go) before it's allowed
+// to run at all. Almost every subcommand reads or writes something
+// under WOR_HOME (services.config.json, vhost configs, the domains/
+// backups/logs trees, ...), and letting one of those run against a
+// WOR_HOME that was never created (or only partially created, e.g. the
+// user cancelled `wor setup` at the confirm prompt) would surface as a
+// confusing low-level "no such file or directory" instead of a clear
+// pointer to `wor setup`. Only four kinds of commands are excluded:
+//   - version/help: never touch WOR_HOME at all.
+//   - setup: this is how a workspace *becomes* initialized -- it must
+//     always be reachable, initialized or not.
+//   - doctor: a read-only health report that already handles an
+//     uninitialized workspace gracefully (reports a ✗ line instead of
+//     crashing), and is exactly the command someone would run to find
+//     out *why* something else is failing.
+func requiresInitializedWorkspace(cmd string) bool {
+	switch cmd {
+	case "version", "--version", "-v", "help", "-h", "--help", "", "setup", "doctor":
+		return false
 	}
 	return true
 }

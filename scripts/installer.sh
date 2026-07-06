@@ -1,6 +1,71 @@
-#Usage: curl -fsSL https://wor.worapong.com/download/installer.sh | bash
 #!/usr/bin/env bash
+
+# Usage:
+#   curl -fsSL https://wor.worapong.com/download/installer.sh | bash
+#
+# Specific version:
+#   curl -fsSL https://wor.worapong.com/download/installer.sh | \
+#       bash -s -- v1.0.0
+#
+# Beta / RC:
+#   curl -fsSL https://wor.worapong.com/download/installer.sh | \
+#       bash -s -- v1.0.0b5
+#
+# Custom package URL (Developer only):
+#   curl -fsSL https://wor.worapong.com/download/installer.sh | \
+#       bash -s -- --url https://example.com/test-build.tar.gz
+
 set -euo pipefail
+
+BASE_URL="https://wor.worapong.com/download/releases"
+
+usage() {
+    cat <<EOF
+WOR Runtime Manager Installer
+
+Usage:
+  bash installer.sh
+      Install latest release.
+
+  bash installer.sh <version>
+      Install a specific release.
+
+  bash installer.sh --url <package-url>
+      Install from a custom package URL.
+
+Examples:
+  bash installer.sh
+  bash installer.sh v1.0.0
+  bash installer.sh v1.0.0b5
+  bash installer.sh --url https://example.com/test-build.tar.gz
+EOF
+}
+
+VERSION="latest"
+DOWNLOAD_URL=""
+
+case "${1:-}" in
+    "")
+        ;;
+    --url)
+        [[ $# -ge 2 ]] || {
+            echo "Error: Missing URL."
+            exit 1
+        }
+        DOWNLOAD_URL="$2"
+        ;;
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    *)
+        VERSION="$1"
+        ;;
+esac
+
+if [[ -z "$DOWNLOAD_URL" ]]; then
+    DOWNLOAD_URL="${BASE_URL}/${VERSION}.tar.gz"
+fi
 
 TMP_DIR="$(mktemp -d)"
 
@@ -10,38 +75,29 @@ cleanup() {
 
 trap cleanup EXIT
 
-if ! command -v curl >/dev/null 2>&1; then
-    echo "Error: curl is required but not installed."
-    exit 1
-fi
-
-if ! command -v tar >/dev/null 2>&1; then
-    echo "Error: tar is required but not installed."
-    exit 1
-fi
-
 cd "$TMP_DIR"
 
-# The query string is a cache-buster, not a real parameter -- latest.tar.gz
-# gets overwritten in place on every release, and a plain repeated URL is
-# exactly the kind of request a CDN/reverse-proxy cache will happily keep
-# serving a stale copy of. Appending a value that changes every run (the
-# current unix timestamp) makes most caches treat each request as a
-# distinct, uncached URL, so this always reaches the origin server for a
-# fresh copy. curl's -o flag still names the local file "latest.tar.gz"
-# regardless of what's in the query string.
-curl -fsSLo latest.tar.gz "https://wor.worapong.com/download/release/latest.tar.gz?_=$(date +%s)"
+echo "Downloading package..."
+echo "  $DOWNLOAD_URL"
 
-tar -xzf latest.tar.gz
+curl -fsSL "$DOWNLOAD_URL" -o package.tar.gz
 
-if [[ ! -d wor-runtime-manager ]]; then
-    echo "Error: Invalid release package."
+echo "Extracting package..."
+
+tar -xzf package.tar.gz
+
+INSTALL_SCRIPT="$(find . -type f -name install.sh | head -n1)"
+
+if [[ -z "$INSTALL_SCRIPT" ]]; then
+    echo "Error: install.sh not found in package."
     exit 1
 fi
 
-cd wor-runtime-manager
+chmod +x "$INSTALL_SCRIPT"
 
-chmod +x install.sh
+cd "$(dirname "$INSTALL_SCRIPT")"
+
+echo "Starting installer..."
 
 if [[ $EUID -eq 0 ]]; then
     exec ./install.sh

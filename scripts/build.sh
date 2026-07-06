@@ -107,6 +107,18 @@ case "${1:-}" in
 
     checking
 
+    # Wipe dist/bin/ before rebuilding the release matrix. build_one's
+    # go build -o always fully overwrites its own named target file, so
+    # this isn't fixing stale *contents* -- it's a guard against
+    # binaries orphaned by a future change to the fixed 5-target matrix
+    # below (a renamed/dropped target would otherwise leave its old
+    # dist/bin/wor-<os>-<arch> sitting there forever with nothing to
+    # remove it). Scoped to --release only: a single-target build
+    # (./scripts/build.sh <goos> <goarch>) must not wipe other targets'
+    # binaries a developer may still want lying around from a previous
+    # run.
+    rm -rf "$ROOT_DIR/dist/bin"
+
     # Matches the GOOS/GOARCH matrix documented in README.md.
     build_one linux linux amd64
     build_one linux linux arm64

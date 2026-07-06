@@ -98,16 +98,26 @@ chmod +x "$PKG_DIR"/bin/wor-linux-* "$PKG_DIR"/bin/wor-macos-*
 cp "$SCRIPT_DIR/install.sh" "$PKG_DIR/install.sh"
 chmod +x "$PKG_DIR/install.sh"
 
+# Wipe the whole dist/release/ directory rather than just rm -f'ing this
+# version's own zip/tar.gz path. Staging above already happens in a
+# brand-new mktemp dir every run, so the *contents* of this run's
+# archives are never stale -- but leftover archives from older versions
+# (or a prior run of this script) sitting alongside the new ones in
+# dist/release/ is exactly the kind of thing that gets grabbed by
+# mistake ("why does the tar.gz I just downloaded still have the old
+# install.sh" is almost always someone opening an old file, not this
+# script producing one). Clearing the directory first means whatever's
+# in dist/release/ after this script finishes is only ever this run's
+# output.
+rm -rf "$ROOT_DIR/dist/release"
 mkdir -p "$ROOT_DIR/dist/release"
 
 echo "==> Compressing (zip)"
 echo "    Output : $ZIP_PATH"
-rm -f "$ZIP_PATH"
 (cd "$STAGE_DIR" && zip -rq "$ZIP_PATH" "$PKG_NAME")
 
 echo "==> Compressing (tar.gz)"
 echo "    Output : $TARGZ_PATH"
-rm -f "$TARGZ_PATH"
 # tar preserves the executable bits chmod'd above natively on both GNU
 # tar (Linux) and BSD tar (macOS) -- no extra flags needed for that.
 # COPYFILE_DISABLE=1 is a macOS-only bsdtar/cp setting that stops it

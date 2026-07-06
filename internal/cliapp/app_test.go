@@ -33,3 +33,40 @@ func TestCommandNeedsLock(t *testing.T) {
 		}
 	}
 }
+
+func TestRequiresInitializedWorkspace(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want bool
+	}{
+		{"version", false},
+		{"--version", false},
+		{"-v", false},
+		{"help", false},
+		{"-h", false},
+		{"--help", false},
+		{"", false},
+		{"setup", false},
+		{"doctor", false},
+		{"env", true},
+		{"clean", true},
+		{"reset", true},
+		{"create", true},
+		{"domain", true},
+		{"service", true},
+		{"run", true},
+		{"host", true},
+		{"database", true},
+		{"source", true},
+		{"deploy", true},
+		{"rollback", true},
+		{"ssl", true},
+		{"info", true},
+	}
+	for _, c := range cases {
+		got := requiresInitializedWorkspace(c.cmd)
+		if got != c.want {
+			t.Errorf("requiresInitializedWorkspace(%q) = %v, want %v", c.cmd, got, c.want)
+		}
+	}
+}
