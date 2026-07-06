@@ -158,6 +158,10 @@ func (a *App) Run(args []string) int {
 		err = a.cmdSSL(rest)
 	case "info":
 		err = a.cmdInfo(rest)
+	case "path":
+		err = a.cmdPath(rest)
+	case "shell-init":
+		err = a.cmdShellInit(rest)
 	case "help", "-h", "--help", "":
 		a.usage()
 	default:
@@ -177,8 +181,13 @@ func (a *App) Run(args []string) int {
 // writes services.config.json/databases.config.json/the PM2 ecosystem
 // file/vhost configs/etc., and misclassifying one of those as
 // lock-free would silently reopen the exact race this lock exists to
-// close. Only three kinds of commands are excluded:
+// close. Only four kinds of commands are excluded:
 //   - version/help: never touch WOR_HOME at all.
+//   - path/shell-init: strictly read-only shell-integration plumbing.
+//     Both are run implicitly and often -- shell-init on every new
+//     terminal (via rc-file eval), path on every `wor goto` -- so
+//     letting them queue behind a long-running deploy would freeze
+//     the user's shell for no reason.
 //   - `service logs` / `host logs`: these can tail/follow indefinitely
 //     (pm2 logs, journalctl -f, ...), so holding an exclusive lock for
 //     their whole runtime would block every other wor command on the
@@ -191,7 +200,7 @@ func (a *App) Run(args []string) int {
 //     and so a wedged/long-running other command can't block them.
 func commandNeedsLock(cmd string, rest []string) bool {
 	switch cmd {
-	case "version", "--version", "-v", "help", "-h", "--help", "", "diagnose", "health":
+	case "version", "--version", "-v", "help", "-h", "--help", "", "diagnose", "health", "path", "shell-init":
 		return false
 	case "service", "host":
 		if len(rest) > 0 && rest[0] == "logs" {
@@ -209,8 +218,13 @@ func commandNeedsLock(cmd string, rest []string) bool {
 // WOR_HOME that was never created (or only partially created, e.g. the
 // user cancelled `wor setup` at the confirm prompt) would surface as a
 // confusing low-level "no such file or directory" instead of a clear
-// pointer to `wor setup`. Only four kinds of commands are excluded:
+// pointer to `wor setup`. Only five kinds of commands are excluded:
 //   - version/help: never touch WOR_HOME at all.
+//   - shell-init: prints a static shell function for rc-file eval,
+//     which runs on every new terminal -- an ERROR banner here would
+//     get eval'd as shell input in every shell the user ever opens.
+//     (`path` is NOT excluded: it's run explicitly, and "workspace not
+//     initialized, run wor setup" is the right answer then.)
 //   - setup: this is how a workspace *becomes* initialized -- it must
 //     always be reachable, initialized or not.
 //   - doctor: a read-only health report that already handles an
@@ -219,7 +233,7 @@ func commandNeedsLock(cmd string, rest []string) bool {
 //     out *why* something else is failing.
 func requiresInitializedWorkspace(cmd string) bool {
 	switch cmd {
-	case "version", "--version", "-v", "help", "-h", "--help", "", "setup", "doctor":
+	case "version", "--version", "-v", "help", "-h", "--help", "", "setup", "doctor", "shell-init":
 		return false
 	}
 	return true

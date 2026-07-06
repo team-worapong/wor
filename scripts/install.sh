@@ -560,6 +560,76 @@ if ! command -v wor >/dev/null 2>&1; then
   echo "Add it (e.g. in /etc/profile.d/) or always invoke ${INSTALL_DIR}/wor directly." >&2
 fi
 
+# ---- offer wor shell-init in the operator's shell rc file --------------
+
+# `wor goto <domain>[/<service>]` only works once the operator's rc
+# file evals `wor shell-init` (a process can't cd its parent shell, so
+# the cd has to happen in a shell function -- see internal/cliapp/
+# path.go). This installer runs as root, but the rc file that matters
+# belongs to $SUDO_USER -- the same operator-vs-root distinction the
+# old-install detection above already makes. Which rc file is decided
+# by that user's *login shell* (getent passwd field 7), not by distro:
+# this script only ever runs on Linux, where bash is the usual default
+# but zsh operators are common enough to matter.
+#
+# The grep guard makes re-runs (release updates) idempotent: any
+# existing mention of `wor shell-init` -- whether added here or by the
+# operator themselves -- means there's nothing to do.
+SHELL_RC=""
+OPERATOR_SHELL=""
+SHELLINIT_ADDED=0
+if [ -n "$OPERATOR_HOME" ]; then
+  OPERATOR_SHELL="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f7 || true)"
+  case "$OPERATOR_SHELL" in
+    */zsh) SHELL_RC="$OPERATOR_HOME/.zshrc" ;;
+    *)     SHELL_RC="$OPERATOR_HOME/.bashrc" ;;
+  esac
+fi
+
+if [ -z "$SHELL_RC" ]; then
+  # Direct root login (no SUDO_USER): there's no way to know whose rc
+  # file to touch, and wor itself refuses to run as root anyway.
+  echo "==> Skipping shell integration (couldn't determine the operator user)."
+  echo "    As the user who will operate wor, add this line to ~/.bashrc or ~/.zshrc:"
+  echo "      eval \"\$(wor shell-init)\""
+elif grep -qF "wor shell-init" "$SHELL_RC" 2>/dev/null; then
+  echo "==> wor shell integration already present in $SHELL_RC -- skipping"
+else
+  echo
+  echo "wor can add one line to $SHELL_RC:"
+  echo "  eval \"\$(wor shell-init)\""
+  echo "which enables:  wor goto <domain>[/<service>]  -> cd into that folder."
+  # Default reply ("") = yes, matching the package-install prompt above:
+  # headless/no-tty runs add the line automatically. That's safe here
+  # because the addition is one clearly-commented line, and the grep
+  # guard above keeps repeat runs from stacking copies.
+  confirm_shellinit="$(prompt_line "Add it now? [Y/n] " "")"
+  case "$confirm_shellinit" in
+    ""|y|Y|yes|Yes|YES)
+      SHELLINIT_ADDED=1
+      SHELL_RC_EXISTED=1
+      [ -f "$SHELL_RC" ] || SHELL_RC_EXISTED=0
+      {
+        echo ""
+        echo "# wor shell integration (wor goto) -- added by wor install.sh"
+        echo "eval \"\$(wor shell-init)\""
+      } >> "$SHELL_RC"
+      # >> as root on a nonexistent rc file would leave it root-owned
+      # (and thus unwritable by the operator forever after); hand a
+      # newly created one to its actual owner. An rc file that already
+      # existed keeps whatever owner/perms it had.
+      if [ "$SHELL_RC_EXISTED" -eq 0 ]; then
+        chown "$SUDO_USER" "$SHELL_RC" || true
+      fi
+      echo "[OK] Added. Takes effect in new shells (or run: source $SHELL_RC)"
+      ;;
+    *)
+      echo "Skipped. To add it later:"
+      echo "  echo 'eval \"\$(wor shell-init)\"' >> $SHELL_RC"
+      ;;
+  esac
+fi
+
 echo
 echo "[OK] Install complete. wor is ready."
 echo
@@ -577,6 +647,13 @@ echo
 # to run them themselves, as whichever normal user will actually
 # operate wor.
 echo "Next, as the (non-root) user who will operate wor, run these in order:"
+if [ "$SHELLINIT_ADDED" -eq 1 ]; then
+  # The eval line was appended to an rc file the operator's *current*
+  # shell has already read -- it only takes effect in shells started
+  # from now on, so surface the one-time source here in the final
+  # checklist (the [OK] line above scrolls away behind the apt output).
+  echo "  0. source $SHELL_RC   # or open a new terminal, to enable \"wor goto\" now"
+fi
 echo "  1. wor version   # confirm the binary installed correctly"
 echo "  2. wor doctor    # confirm every runtime above was detected correctly"
 echo "  3. wor setup     # configure WOR_HOME, host provider, SSL, etc."

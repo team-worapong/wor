@@ -20,6 +20,14 @@ Usage:
   wor domain add <domain-id>
   wor domain remove <domain-id>
 
+  wor path [<domain>[/<service>]]
+      (prints the absolute directory of the domains tree, a domain, or
+      a service; for scripting: cd "$(wor path myapp/backend)")
+  wor shell-init
+      (prints a shell function for ~/.bashrc / ~/.zshrc -- install with
+      eval "$(wor shell-init)" -- after which
+      "wor goto <domain>[/<service>]" cd's straight into that folder)
+
   wor service add <domain>/<service> [--host=<host>] [--port=<port>] [--entry=<entry-point>] [--service-type=static|node|go|python|php] [--php-version=<version>] [--no-php-pool] [--no-start]
       (php services get their own dedicated php-fpm pool automatically
       when exactly one PHP-FPM version is detected on this host;
