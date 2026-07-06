@@ -15,12 +15,16 @@ import "fmt"
 //
 // Notes on the details:
 //   - `shift` inside the function only shifts the *function's* args,
-//     so `wor goto` with no target cleanly becomes `wor path` (-> the
-//     domains root).
+//     so a bare `wor goto` becomes a bare `wor path` -- which opens
+//     the interactive picker. The menu works *inside* command
+//     substitution because the menu + prompt go to stderr and the
+//     selection is read from stdin -- $(...) captures only stdout,
+//     which carries nothing but the chosen path (see pathPick in
+//     path.go).
 //   - The resolved path is captured before cd so a resolution failure
-//     (unknown domain, uninitialized workspace, ...) prints wor's
-//     normal ERROR on stderr and returns nonzero without moving the
-//     shell anywhere.
+//     (unknown domain, uninitialized workspace, cancelled picker, ...)
+//     prints wor's normal ERROR on stderr and returns nonzero without
+//     moving the shell anywhere.
 //   - `command wor` bypasses the function itself, avoiding infinite
 //     recursion.
 const shellInitScript = `# wor shell integration.
@@ -29,7 +33,11 @@ const shellInitScript = `# wor shell integration.
 # Then:
 #   wor goto <domain>            -> cd WOR_HOME/domains/<domain>
 #   wor goto <domain>/<service>  -> cd WOR_HOME/domains/<domain>/<service>
-#   wor goto                     -> cd WOR_HOME/domains
+#   wor goto .                   -> cd WOR_HOME
+#   wor goto ./<path>            -> cd WOR_HOME/<path>  (e.g. ./logs)
+#   wor goto                     -> numbered menu (WOR_HOME first, then
+#                                   every domain and domain/service);
+#                                   pick one to cd there
 wor() {
     if [ "$1" = "goto" ]; then
         shift

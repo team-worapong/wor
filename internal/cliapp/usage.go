@@ -20,13 +20,18 @@ Usage:
   wor domain add <domain-id>
   wor domain remove <domain-id>
 
-  wor path [<domain>[/<service>]]
-      (prints the absolute directory of the domains tree, a domain, or
-      a service; for scripting: cd "$(wor path myapp/backend)")
+  wor path [.|./<path>|<domain>[/<service>]]
+      (prints the absolute directory of a domain or service; "." means
+      WOR_HOME itself, "./<path>" means WOR_HOME/<path> -- any subtree,
+      e.g. ./logs. For scripting: cd "$(wor path myapp/backend)".
+      With no argument, shows a numbered menu -- WOR_HOME first, then
+      every domain and domain/service -- and prints whichever one you
+      select)
   wor shell-init
       (prints a shell function for ~/.bashrc / ~/.zshrc -- install with
       eval "$(wor shell-init)" -- after which
-      "wor goto <domain>[/<service>]" cd's straight into that folder)
+      "wor goto <domain>[/<service>]" cd's straight into that folder,
+      and a bare "wor goto" opens the numbered picker)
 
   wor service add <domain>/<service> [--host=<host>] [--port=<port>] [--entry=<entry-point>] [--service-type=static|node|go|python|php] [--php-version=<version>] [--no-php-pool] [--no-start]
       (php services get their own dedicated php-fpm pool automatically

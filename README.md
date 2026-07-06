@@ -42,9 +42,51 @@ GOOS=windows GOARCH=amd64 go build -o dist/bin/wor-windows-amd64.exe ./cmd/wor
 
 (`scripts/build.sh --release` does this for you and also packages a distributable zip via `scripts/release.sh` -- raw binaries land in `dist/bin/`, packaged zips in `dist/release/`.)
 
+## Install on a server
+
+Browse all downloadable files and release versions at:
+<https://wor.worapong.com/download>
+
+One-liner -- downloads the latest release and hands off to its bundled
+`install.sh` (which will sudo itself):
+
+```bash
+curl -fsSL https://wor.worapong.com/download/installer.sh | bash
+```
+
+Install a specific version (any release tag listed on the download
+page, including beta builds):
+
+```bash
+curl -fsSL https://wor.worapong.com/download/installer.sh | bash -s -- v1.0.0-b31
+```
+
+Or manually -- download a release archive yourself (both `.tar.gz` and
+`.zip` contain the same files), extract, and run the installer. The
+folder inside the archive is always `wor-runtime-manager/`, regardless
+of version:
+
+```bash
+curl -fsSL https://wor.worapong.com/download/releases/v1.0.0-b31.tar.gz -o wor.tar.gz
+tar -xzf wor.tar.gz          # or: unzip wor-runtime-manager-<version>.zip
+cd wor-runtime-manager
+sudo ./install.sh
+```
+
+`install.sh` auto-detects the distro (Debian/Ubuntu only for now),
+reports which runtime packages are already installed, asks before
+installing only the missing ones (it never upgrades or removes
+anything already present), copies the matching `bin/wor-linux-<arch>`
+into `/usr/local/bin`, and offers to enable the `wor goto` shell
+integration in your rc file. Afterwards, as the non-root operator
+user, run in order: `wor version` → `wor doctor` → `wor setup`.
+
 ## Commands
 
-Same surface as wor-cli v1:
+The wor-cli v1 surface, plus commands added in the Go rewrite (`run`,
+`health`, `diagnose`, `rollback`, `path`/`goto`, `shell-init`). See
+`docs/commands.md` for the full reference; `internal/cliapp/usage.go`
+is the source of truth:
 
 ```text
 wor version / --version
@@ -59,11 +101,21 @@ wor create [host]
 
 wor domain add|remove <domain-id>
 
-wor service add <domain>/<service> [--host=] [--port=] [--entry=] [--service-type=static|node|go|python|php]
+wor path [.|./<path>|<domain>[/<service>]]
+    (prints the directory: "." = WOR_HOME, "./logs" = WOR_HOME/logs,
+    no argument = numbered picker of WOR_HOME + every domain/service)
+wor shell-init
+    (prints a shell function; eval "$(wor shell-init)" in
+    ~/.bashrc/~/.zshrc enables `wor goto <target>` = cd there)
+
+wor service add <domain>/<service> [--host=] [--port=] [--entry=] [--service-type=static|node|go|python|php] [--php-version=] [--no-php-pool] [--no-start]
 wor service remove <domain>/<service> [--cascade] [--yes]
 wor service start|stop|restart <domain>/<service>
 wor service status
 wor service logs <domain>/<service> [--lines=100]
+
+wor run
+    (ensure every enabled service and its runtimes are up)
 
 wor host add <host> [--target=] [--server=nginx|apache] [--replace] [--domain-type=] [--add-hosts|--no-hosts]
 wor host remove <host> [--yes]
@@ -76,16 +128,21 @@ wor database backup <domain>/<profile>[/database]
 
 wor source clone <domain> <git-url>
 wor source clone <domain>/<service> <git-url>
-wor source pull <domain[/service]>
-wor source backup <domain[/service]>
+wor source pull <domain[/service]> [--stash]
+wor source backup <domain[/service]> [--gitignore=enable|disable]
 
-wor deploy <host|domain/service> [--pull-only] [--no-pull] [--no-restart] [--force]
+wor deploy <host|domain/service> [--pull-only] [--no-pull] [--no-restart] [--force] [--stash]
+wor rollback <domain>/<service> [--yes]
 
 wor ssl issue <host> [--provider=letsencrypt|self-signed|custom|none]
 wor ssl renew|status|remove <host>
 wor ssl install <host> --cert=<path> --key=<path>
 
 wor info <host|domain/service>
+wor health
+    (fleet-wide sweep: is every enabled service actually serving?)
+wor diagnose <host|domain/service>
+    (read-only root-cause analysis for one broken target)
 ```
 
 ## Service templates
