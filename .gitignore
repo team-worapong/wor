@@ -22,6 +22,8 @@ backups/
 /public/
 public/
 
+AGENTS.md
+
 # Test binary, built with `go test -c`
 *.test
 
