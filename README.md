@@ -1,10 +1,10 @@
 # WOR Runtime Manager
 
-WOR is a cross-platform Runtime Manager for web applications.
-Cross-platform (Linux / macOS / Windows), an
-Infrastructure & Operations tool for managing Node.js/PHP services,
-static sites, nginx/apache host configuration, SSL certificates, and
-database backups under one filesystem convention.
+[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go)](...)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-success)](...)
+
+WOR is a cross-platform Runtime Manager that deploys, manages and diagnoses modern web services with a consistent workflow. Cross-platform (Linux / macOS / Windows), an Infrastructure & Operations tool for managing Node.js/PHP services, static sites, nginx/apache host configuration, SSL certificates, and database backups under one filesystem convention.
 
 This is a from-scratch Go port of the original bash CLI. The command
 surface (subcommands, flags, directory layout) is kept as close to the
@@ -196,13 +196,12 @@ Proudly developed in Thailand 🇹🇭
 
 ## Maintainer
 
-**Worapong Sriwichian** Team (^_^)!
+**Worapong Sriwichian**
+Team (^_^)!
 
 Creator and maintainer of WOR Runtime Manager.
-
 - Website: https://www.worapong.com
 - GitHub: https://github.com/team-worapong
 
 Copyright © 2026 Worapong Sriwichian.
-
 Licensed under the Apache License 2.0.

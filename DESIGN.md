@@ -1,446 +1,472 @@
-# บันทึกการออกแบบ: wor-cli (bash) -> wor (Go)
+# Design notes: wor-cli (bash) -> wor (Go)
 
-เอกสารนี้บันทึกความแตกต่างที่ตั้งใจทำจาก shell CLI ตัวเดิม พร้อมเหตุผล
-ของแต่ละจุด สิ่งใดที่ไม่ได้พูดถึงในนี้ควรมีพฤติกรรมเหมือนเดิมทุกประการ
-(directory convention เดิม, ชื่อ PM2 แบบเดิม `wor_<domain>_<service>`,
-ชื่อไฟล์ host แบบเดิม `wor__<host>.conf` / `000_wor_default.conf`,
-ตัวแปร template เดิม)
+This document records the deliberate differences from the original shell
+CLI, with the reasoning behind each. Anything not mentioned here should
+behave exactly as before (same directory conventions, same PM2 naming
+`wor_<domain>_<service>`, same host file naming `wor__<host>.conf` /
+`000_wor_default.conf`, same template variables).
 
-หัวข้อ 1-8 คือการออกแบบตั้งต้นตอนพอร์ตจาก bash มาเป็น Go หัวข้อ 9 เป็นต้นไป
-คือฟีเจอร์/การรีดีไซน์ที่เพิ่มเข้ามาทีหลัง หลังจากพอร์ตเสร็จรอบแรกแล้ว
+Sections 1-8 are the original design from porting bash to Go. Section 9
+onward covers features/redesigns added later, after the first porting pass
+was complete.
 
-## 1. ไฟล์ config เป็น JSON ไม่ใช่ JS ที่เขียนเอง
+## 1. Config files are JSON, not hand-written JS
 
-shell CLI เก็บ `services.config.js` / `databases.config.js` /
-`backup.config.js` เป็นไฟล์ `module.exports = {...}` อ่าน/เขียนด้วยการ
-shell out ไปเรียก `node -e '...'` ทำให้ Node.js กลายเป็น hard dependency
-สำหรับแค่ "จัดการ config" แม้แต่เว็บ static ที่ไม่มี Node.js service เลย
-ก็ตาม และวิธีนี้ไม่มีทางเทียบเท่าที่ใช้งานได้ดีบน Windows โดยไม่ต้องสมมติ
-ว่า Node อยู่ใน PATH ตั้งแต่ก่อนที่ wor เองจะ list domain ได้ด้วยซ้ำ
+The shell CLI stored `services.config.js` / `databases.config.js` /
+`backup.config.js` as `module.exports = {...}` files, read/written by
+shelling out to `node -e '...'`. That made Node.js a hard dependency just
+for "managing config" -- even for a pure static site with no Node.js
+service at all -- and there is no workable Windows equivalent of that
+approach without assuming Node is on PATH before wor can even list
+domains.
 
-เวอร์ชัน Go เก็บข้อมูลชุดเดียวกันเป็น `services.config.json` /
-`databases.config.json` / `backup.config.json` อ่าน/เขียนด้วย
-`encoding/json` โครงสร้างและ field เดิมทุกอย่าง (`domain`,
-`services[].name/type/hosts/port/...`) เปลี่ยนแค่นามสกุลไฟล์ ไม่มีขั้นตอน
-generate โค้ดอีกต่อไป ถ้ามีไฟล์ `*.config.js` เดิมจาก wor-cli v1 อยู่
-ต้องแปลงเป็น `.json` เอง (ตัด `module.exports = ` ข้างหน้ากับ `;` ท้าย
-ไฟล์ออก) เวอร์ชันนี้ยังไม่มี migration อัตโนมัติ
+The Go version stores the same data as `services.config.json` /
+`databases.config.json` / `backup.config.json`, read/written with
+`encoding/json`. Structure and fields are identical (`domain`,
+`services[].name/type/hosts/port/...`); only the file extension changed.
+There is no code-generation step anymore. If old `*.config.js` files from
+wor-cli v1 exist, they must be converted to `.json` manually (strip the
+leading `module.exports = ` and the trailing `;`); this version has no
+automatic migration yet.
 
-`wor.config.js` (ไฟล์ PM2 ecosystem ที่ generate ออกมา) เปลี่ยนเป็น
-`wor.config.json` เช่นกัน PM2 รองรับ `pm2 start ecosystem.json` เป็นค่า
-built-in อยู่แล้ว เปลี่ยนแบบนี้ไม่เสียความสามารถอะไรไปเลย
+`wor.config.js` (the generated PM2 ecosystem file) likewise became
+`wor.config.json`. PM2 supports `pm2 start ecosystem.json` out of the box,
+so nothing is lost by this change.
 
-## 2. ไม่ shell out ไปเรียก gzip/zip/tail/ss/lsof/netstat
+## 2. No shelling out to gzip/zip/tail/ss/lsof/netstat
 
-shell เวอร์ชันเดิมประกอบด้วย Unix utility เล็ก ๆ หลายสิบตัว แต่ละตัวคือ
-จุดที่การพอร์ตไป Windows จะพัง เวอร์ชัน Go แทนที่ด้วย standard library:
+The original shell version was built on dozens of small Unix utilities,
+each one a point where a Windows port would break. The Go version replaces
+them with the standard library:
 
-- บีบอัด backup ฐานข้อมูล: `compress/gzip` แทนการ pipe ผ่านโปรแกรม
-  `gzip`
-- backup source: `archive/zip` แทนการ shell out ไป `zip`
-- เช็คว่า port ว่างไหม (auto-port picker ของ `wor service add`): ลอง
-  `net.Listen("tcp", ...)` แทนการ parse output ของ `ss`/`lsof`/`netstat`
-- `wor host logs`: เขียน tail-and-follow loop เองเล็ก ๆ แทน `tail -f`
-  (ซึ่งไม่มีบน Windows)
+- database backup compression: `compress/gzip` instead of piping through
+  the `gzip` program
+- source backup: `archive/zip` instead of shelling out to `zip`
+- checking whether a port is free (the auto-port picker of
+  `wor service add`): try `net.Listen("tcp", ...)` instead of parsing
+  `ss`/`lsof`/`netstat` output
+- `wor host logs`: a small hand-written tail-and-follow loop instead of
+  `tail -f` (which doesn't exist on Windows)
 
-## 3. Path ของ host provider ต่างกันตาม OS
+## 3. Host provider paths differ per OS
 
-nginx/apache มี convention เรื่อง sites-available/sites-enabled/log
-directory ต่างกันตาม OS:
+nginx/apache have different sites-available/sites-enabled/log directory
+conventions per OS:
 
 - Linux: `/etc/nginx/sites-available` + `/etc/nginx/sites-enabled`
-  (แบบ Debian ดั้งเดิม), `/etc/apache2/sites-available` หรือ
+  (classic Debian style), `/etc/apache2/sites-available` or
   `/etc/httpd/conf.d`
-- macOS (Homebrew): ใช้ directory เดียวแบบ flat (`servers/` สำหรับ
-  nginx, `servers/` ใต้ `httpd` สำหรับ apache) -- ไม่มี directory
-  "enabled" แยกต่างหาก การ enable host จึงเป็น no-op ทันทีที่เขียนไฟล์
-  เสร็จ
-- Windows: ไม่มี convention มาตรฐานที่ใช้กันทั่วไป เวอร์ชันนี้ตั้งค่า
-  default เป็น `C:\nginx\conf\sites-available` /
-  `C:\Apache24\conf\sites-available` โดย directory "enabled" เท่ากับ
-  directory "available" เลย (โมเดล flat-directory แบบเดียวกับ macOS
-  เพื่อเลี่ยงปัญหาที่การสร้าง symlink บน Windows ต้องมีสิทธิ์
-  Administrator หรือเปิด Developer Mode) ค่าเหล่านี้เป็นแค่ default ที่
-  สมเหตุสมผล ไม่ใช่ค่าที่ถูกต้องสากล -- override ผ่าน `host.env`
-  (`NGINX_SITES_AVAILABLE=` ฯลฯ) ให้ตรงกับ nginx/Apache จริงบนเครื่อง
-  Windows นั้น
+- macOS (Homebrew): a single flat directory (`servers/` for nginx,
+  `servers/` under `httpd` for apache) -- there is no separate "enabled"
+  directory, so enabling a host is a no-op as soon as the file is written
+- Windows: no widely used standard convention. This version defaults to
+  `C:\nginx\conf\sites-available` / `C:\Apache24\conf\sites-available`,
+  with the "enabled" directory equal to the "available" directory (the
+  same flat-directory model as macOS, avoiding the problem that creating
+  symlinks on Windows requires Administrator rights or Developer Mode).
+  These are merely reasonable defaults, not universally correct values --
+  override via `host.env` (`NGINX_SITES_AVAILABLE=` etc.) to match the
+  actual nginx/Apache on that Windows machine.
 
-ทั้งหมดนี้อยู่หลัง interface เดียว (`internal/hostprovider`) เพิ่ม
-default ที่แม่นยำกว่าสำหรับ Windows ทีหลังได้โดยไม่ต้องแตะโค้ดคำสั่งใด ๆ
+All of this sits behind a single interface (`internal/hostprovider`); more
+accurate Windows defaults can be added later without touching any command
+code.
 
-## 4. การขอสิทธิ์ (Privilege elevation)
+## 4. Privilege elevation
 
-ฝั่ง Unix ใช้โมเดลเดิม: ถ้าไม่ใช่ root ให้ครอบ operation ที่ต้องใช้สิทธิ์
-(`mkdir`, เขียนเข้า `/etc/nginx/...`, `tee`, `rm`, `ln`, `systemctl
-reload`, `certbot`) ด้วย `sudo` แต่เพิ่ม 2 อย่างจากเวอร์ชัน shell:
+On Unix the original model stands: if not root, wrap privileged operations
+(`mkdir`, writes into `/etc/nginx/...`, `tee`, `rm`, `ln`, `systemctl
+reload`, `certbot`) with `sudo`. Two additions over the shell version:
 
-- **`wor` ปฏิเสธการรันแบบ `sudo wor ...`** `osutil.IsSudoElevated()`
-  เช็คทั้ง root *และ* มี environment variable `SUDO_USER` (ซึ่ง `sudo`
-  ตั้งให้ child process เสมอ แต่การ login เป็น root ตรง ๆ จะไม่มี)
-  `App.Run()` เช็คจุดนี้ก่อนส่งต่อไป subcommand ใด ๆ เลย ถ้าเจอจะ error
-  ทันที การเช็คแบบนี้แคบกว่า "reject ถ้าเป็น root" โดยตั้งใจ: server ที่
-  ไม่มี user account อื่นนอกจาก root (login แล้วรัน `wor` ตรง ๆ ไม่ผ่าน
-  `sudo` เลย) จะไม่ได้รับผลกระทบ เพราะ `SUDO_USER` จะไม่ถูกตั้งในกรณีนี้
-  PM2 เองก็ปฏิเสธการรันภายใต้ sudo อยู่แล้ว (ดู `internal/pm2`) ส่วนนี้
-  ปิดช่องโหว่เดียวกันให้ทุก subcommand เพื่อไม่ให้ user เผลอได้ git
-  clone/npm install/PM2 dump ที่เป็นของ root มาโดยแค่เติม `sudo` หน้า
-  คำสั่งทั้งหมด
-- **`osutil.SudoCommand` จะถามยืนยันแค่ครั้งแรก (ต่อ 1 process) ที่ต้อง
-  เติม `sudo` จริง ๆ** ไม่ถามล่วงหน้า และไม่ถามซ้ำสำหรับที่เหลือของคำสั่ง
-  เดียวกัน `cliapp.New()` ต่อสายกลไกนี้เข้ากับ prompt แบบ `[Y/n]`
-  (`osutil.SetElevationPrompt`) ถ้าตอบปฏิเสธ operation ที่ต้องใช้สิทธิ์
-  ทุกอันหลังจากนั้นในคำสั่งเดียวกันจะ error ทันที ไม่ถามซ้ำอีก
-  environment ที่ path ที่เกี่ยวข้องเขียนได้โดยไม่ต้องใช้สิทธิ์อยู่แล้ว
-  (เช่น directory ของ nginx ที่ติดตั้งผ่าน Homebrew บน macOS) จะไม่เจอ
-  prompt นี้เลย เพราะการเขียนแบบไม่มีสิทธิ์พิเศษสำเร็จตั้งแต่รอบแรก
-  ไม่มีทางไปถึง `SudoCommand`
+- **`wor` refuses to run as `sudo wor ...`.** `osutil.IsSudoElevated()`
+  checks both root *and* the presence of the `SUDO_USER` environment
+  variable (which `sudo` always sets for its child process, but a direct
+  root login does not). `App.Run()` checks this before dispatching to any
+  subcommand and errors immediately if found. This check is deliberately
+  narrower than "reject if root": a server with no user account other than
+  root (logging in and running `wor` directly, never via `sudo`) is
+  unaffected, because `SUDO_USER` is not set in that case. PM2 itself
+  already refuses to run under sudo (see `internal/pm2`); this closes the
+  same hole for every subcommand, so a user can't accidentally end up with
+  root-owned git clone/npm install/PM2 dump artifacts just by prefixing
+  the whole command with `sudo`.
+- **`osutil.SudoCommand` asks for confirmation only the first time (per
+  process) it actually needs to add `sudo`.** It never asks up front, and
+  never asks again for the rest of the same command. `cliapp.New()` wires
+  this mechanism to a `[Y/n]` prompt (`osutil.SetElevationPrompt`). If the
+  user declines, every subsequent privileged operation in the same command
+  errors immediately without asking again. Environments where the relevant
+  paths are already writable without elevation (e.g. Homebrew-installed
+  nginx directories on macOS) never see this prompt at all, because the
+  unprivileged write succeeds on the first try and never reaches
+  `SudoCommand`.
 
-Windows ไม่มีกลไกรันคำสั่งซ้ำแบบขอสิทธิ์เพิ่มจากใน process ที่รันอยู่แล้ว
-เวอร์ชันนี้จึงไม่ได้สร้าง flow เปิด UAC ใหม่ให้ -- การเปิด console แบบ
-Administrator ยังเป็นวิธีเดียวที่จะรันคำสั่งที่ต้องใช้สิทธิ์บน Windows
-`IsSudoElevated()` คืนค่า `false` เสมอบน Windows โดยตั้งใจ เพื่อไม่ให้
-user บน Windows ถูกบล็อกแบบเดียวกับที่ `sudo wor` ถูกบล็อกบน Unix
-`osutil.IsElevated()` เช็ค console ที่ elevated แล้วผ่าน `net session`
-(สำเร็จเฉพาะ Administrator) เมื่อการเขียนที่ต้องใช้สิทธิ์ล้มเหลว
-error message จะบอก user ให้เปิด terminal ใหม่แบบ Administrator แทนที่
-จะพยายาม auto-elevate ผ่าน UAC prompt เงียบ ๆ (ซึ่งจะพังอยู่ดี)
+Windows has no mechanism to re-run a command with elevated rights from an
+already-running process, so this version does not build a new
+UAC-launching flow -- opening an Administrator console remains the only
+way to run privileged commands on Windows. `IsSudoElevated()` always
+returns `false` on Windows, deliberately, so Windows users are not blocked
+the way `sudo wor` is blocked on Unix. `osutil.IsElevated()` checks for an
+already-elevated console via `net session` (succeeds only for
+Administrator). When a privileged write fails, the error message tells the
+user to open a new terminal as Administrator, rather than attempting a
+silent auto-elevation via a UAC prompt (which would break anyway).
 
-## 5. SSL: Let's Encrypt รองรับเฉพาะ Unix
+## 5. SSL: Let's Encrypt is Unix-only
 
-Certbot ไม่มีเวอร์ชัน official ที่เชื่อถือได้บน Windows `wor ssl issue
---provider=letsencrypt` จะ error ชัดเจนบน Windows ชี้ไปที่ `self-signed`
-หรือ `custom` แทนที่จะพยายามทำอะไรที่เปราะบาง self-signed (ผ่าน
-`openssl` ถ้าติดตั้งไว้) กับ custom (เอา cert/key ของตัวเองมาใช้)
-ใช้งานได้ทุก OS
+Certbot has no trustworthy official Windows build. `wor ssl issue
+--provider=letsencrypt` errors clearly on Windows, pointing to
+`self-signed` or `custom` instead of attempting something fragile.
+self-signed (via `openssl` if installed) and custom (bring your own
+cert/key) work on every OS.
 
-## 6. Service template: เพิ่ม go/python + systemd (ใหม่เทียบกับ v1)
+## 6. Service templates: added go/python + systemd (new vs v1)
 
-wor-cli v1 ไม่มี template `go` หรือ `python` เวอร์ชันนี้เพิ่มเข้ามา
-(ดู `docs/services.md`) พร้อมกับการจัดระเบียบครั้งใหญ่: ตัด template
-แบบผสม 4 ตัว (`static-node`, `node-web`, `node-php`, `php-node`) ออก
-เหลือแค่ 5 ตัว: `static`, `node`, `go`, `python`, `php` -- service หนึ่ง
-ตัวคือ runtime หนึ่งชนิด ไม่ใช่การผสมกัน (กรณีที่ template ผสมเคยรองรับ
-ตอบโจทย์ได้ดีกว่าด้วยการแยกเป็น static service กับ process-backed
-service คนละตัวภายใต้ domain เดียวกัน)
+wor-cli v1 had no `go` or `python` template. This version adds them (see
+`docs/services.md`) along with a major cleanup: the 4 mixed templates
+(`static-node`, `node-web`, `node-php`, `php-node`) were removed, leaving
+just 5: `static`, `node`, `go`, `python`, `php` -- one service is one
+runtime kind, not a mix (the cases the mixed templates used to cover are
+served better by splitting into a static service and a process-backed
+service as separate services under the same domain).
 
-ตอนนี้มี process supervisor 2 ตัว:
+There are now 2 process supervisors:
 
-- **node** ใช้ PM2 เสมอ (เหมือน v1) ทุก OS
-- **go** กับ **python** ใช้ **systemd** บน Linux (มีอยู่แล้วในแทบทุก
-  distro และเข้าใจง่ายกว่าการเพิ่ม process manager ตัวที่สองที่ใช้ PM2)
-  แล้ว fallback ไปเป็น **PM2** บน macOS และ Windows ที่ไม่มี systemd
-  `domainmodel.ProcessProviderFor` คือจุดเดียวที่ตัดสินใจเรื่องนี้ตาม OS
-  `internal/systemd` เลียนแบบโครงสร้างของ `internal/pm2` (generate unit,
-  start/stop/restart/status/logs, ตั้งชื่อ `wor_<domain>_<service>`
-  เหมือนกัน) ทำให้ทั้งสอง provider ใช้งานจาก CLI แทบไม่ต่างกัน
-- **static** ไม่มี process ให้ดูแลเลย
-- **php** ไม่มี *process* ให้ดูแล (php-fpm master สมมติว่า start ไว้เป็น
-  system service ของตัวเองอยู่แล้ว) แต่หลังจากฟีเจอร์ per-service
-  php-fpm pool (หัวข้อ 8) wor จะดูแลสิ่งหนึ่งใต้ master นั้น: ไฟล์
-  `.conf` ของ pool เฉพาะ service ที่ wor เขียน/ลบ validate และสั่ง
-  reload php-fpm เอง wor ยังไม่เคย start/stop/restart ตัว master
-  process ของ php-fpm เอง -- แค่เพิ่ม/ลบไฟล์ pool ใต้มันเท่านั้น
-  เหมือนกับที่ `wor host reload` แค่สั่งให้ nginx/apache reload ไม่เคย
-  ดูแลมันในฐานะ process
+- **node** always uses PM2 (as in v1), on every OS
+- **go** and **python** use **systemd** on Linux (already present on
+  virtually every distro, and simpler to reason about than adding a second
+  PM2-based process manager), falling back to **PM2** on macOS and
+  Windows, which have no systemd. `domainmodel.ProcessProviderFor` is the
+  single place that makes this OS-based decision. `internal/systemd`
+  mirrors the structure of `internal/pm2` (generate unit,
+  start/stop/restart/status/logs, same `wor_<domain>_<service>` naming),
+  so the two providers feel nearly identical from the CLI.
+- **static** has no process to manage at all
+- **php** has no *process* to manage (the php-fpm master is assumed to be
+  started as its own system service already), but since the per-service
+  php-fpm pool feature (section 8), wor does manage one thing under that
+  master: the per-service pool `.conf` files, which wor writes/deletes,
+  validates, and reloads php-fpm for itself. wor still never
+  starts/stops/restarts the php-fpm master process itself -- it only
+  adds/removes pool files under it, just as `wor host reload` only tells
+  nginx/apache to reload and never manages them as processes.
 
-ทุกการเรียก systemctl/journalctl ผ่าน confirm-once sudo gate เดียวกับที่
-อธิบายในหัวข้อ 4
+Every systemctl/journalctl invocation goes through the same confirm-once
+sudo gate described in section 4.
 
-`go` มีขั้นตอนเพิ่มที่ node กับ python ไม่มี คือต้อง build:
-`wor service add --service-type=go` กับ `wor create` จะรัน `go build`
-ทันทีหลัง scaffold เสร็จ และ `wor deploy` จะรันซ้ำทุกครั้งที่ `git pull`
-ดึง commit ใหม่มา (ไม่มีเงื่อนไข ไม่ได้อิงจาก diff แบบ heuristic ของ
-node ที่เช็คจาก package.json เพราะแค่แก้ไฟล์ `.go` โดยไม่มี dependency
-เปลี่ยนก็ต้อง compile ใหม่อยู่ดี)
+`go` has an extra step that node and python don't: it must build.
+`wor service add --service-type=go` and `wor create` run `go build`
+immediately after scaffolding, and `wor deploy` re-runs it every time
+`git pull` brings in new commits (unconditionally -- not based on a
+node-style diff heuristic against package.json, because editing a `.go`
+file with no dependency change still requires recompiling).
 
-`wor create` เปลี่ยนรูปแบบด้วยในการจัดระเบียบครั้งนี้: ไม่รับ flag
-`--` ใด ๆ เลย (รับแค่ host เป็น positional argument ที่ไม่บังคับ)
-ตอกย้ำความตั้งใจเดิมว่าเป็น "interactive only" flag เดียวที่เอาความ
-สามารถจริงออกไปคือ `--domain=` (override domain id ที่ auto-derive มา)
-กลายเป็น prompt แบบ confirm/override แทนที่จะหายไปเฉย ๆ งาน automation
-ยังไปทาง `wor domain/service/host add` เหมือนเดิม ซึ่งได้ `--service-type=`
-เพิ่มมา (เปลี่ยนชื่อจาก `--template=` ให้ตรงกับ `--domain-type=` ที่มีอยู่
-แล้วและตรงกับชื่อ field `Service.Type` ภายใน) กับ flag ใหม่ `--entry=`
-สำหรับ override ชื่อไฟล์/binary entry point ของ service
+`wor create` also changed shape in this cleanup: it accepts no `--` flags
+at all (only the optional positional host argument), reinforcing the
+original intent of being "interactive only". The one flag whose real
+capability was removed, `--domain=` (overriding the auto-derived domain
+id), became a confirm/override prompt instead of simply disappearing.
+Automation still goes through `wor domain/service/host add`, which gained
+`--service-type=` (renamed from `--template=` to match the existing
+`--domain-type=` and the internal `Service.Type` field name) and a new
+`--entry=` flag for overriding the service's entry point file/binary name.
 
-`wor create`/`wor service add` จะบล็อกการสร้าง service ทันทีด้วย error
-ชัดเจนว่า "runtime not found" ถ้า runtime ของ template ที่เลือกยังไม่ได้
-ติดตั้ง -- ตั้งใจไม่มี prompt แบบ "ตั้งค่าให้เลยตอนนี้ไหม" เหมือน wizard
-อื่นบางตัวใน CLI นี้ `wor doctor` คือจุดเดียวที่รายงานว่าอะไรขาดและแก้
-ยังไง
+`wor create`/`wor service add` block service creation immediately with a
+clear "runtime not found" error if the chosen template's runtime is not
+installed -- deliberately no "set it up now?" prompt like some other
+wizards in this CLI. `wor doctor` is the single place that reports what's
+missing and how to fix it.
 
-## 7. สิ่งที่ตั้งใจไม่ทำ (เหมือน v1)
+## 7. Deliberately not done (same as v1)
 
-- ไม่มี restore/drop/migrate สำหรับฐานข้อมูล -- backup อย่างเดียว
-- `wor create` ยังคง interactive-only เท่านั้น งาน automation ไปทาง
+- No restore/drop/migrate for databases -- backup only
+- `wor create` remains interactive-only; automation goes through
   `wor domain/service/host add`
-- Template เปลี่ยนไม่ได้หลังสร้าง service แล้ว (immutable)
+- Templates cannot be changed after a service is created (immutable)
 
 ## 8. Per-service php-fpm pool
 
-ออกแบบและตกลงขอบเขตก่อนเริ่มเขียนโค้ด (ตาม convention ของโปรเจกต์ที่ต้อง
-คุย/ยืนยัน design ก่อนสำหรับการเปลี่ยนแปลงที่มีผลต่อ architecture) เดิม
-php service ทุกตัวใช้ `PHP_FPM_ENDPOINT` เดียวร่วมกันทั้งโฮสต์ (ค่า config
-เดียว หรือ socket ที่ auto-detect จาก candidate list คงที่ --
-`internal/hostprovider/phpfpm.go`) ตั้งแต่ฟีเจอร์นี้เป็นต้นไป php service
-แต่ละตัวสามารถมี pool ของตัวเองผ่าน `internal/phpfpm`:
+Designed and scoped before any code was written (per the project
+convention of discussing/confirming design first for changes that affect
+architecture). Previously every php service shared one `PHP_FPM_ENDPOINT`
+host-wide (a single config value, or a socket auto-detected from a fixed
+candidate list -- `internal/hostprovider/phpfpm.go`). From this feature
+onward, each php service can have its own pool via `internal/phpfpm`:
 
-- **การแยกตัว (isolation)**: unix socket ของตัวเอง, ค่า `pm.*` ของ
-  ตัวเอง, เวอร์ชัน PHP-FPM ของตัวเอง **การแยก unix user ต่างกันตาม OS**
-  (แก้ไขจาก design ตั้งต้น -- ดูรายละเอียดด้านล่าง): บน Linux แต่ละ pool
-  มี unix user เฉพาะของตัวเอง (สร้างผ่าน `useradd --system
-  --no-create-home`) user นี้จะถูกเพิ่มเข้ากลุ่มเจ้าของเดิมของ document
-  root ของ service แล้วให้สิทธิ์ `chmod g+rX` อ่านได้ -- ไม่มีการ chown
-  เจ้าของ document root เดิมเลย บน **macOS ทุก pool ใช้ user เดียวกับที่
-  รัน php-fpm master (ไม่มี unix user แยกต่อ service อีกต่อไป)**
-- **ขอบเขต platform**: Linux (โครงสร้าง `/etc/php/<version>/fpm` แบบ
-  Debian/Ubuntu) และ macOS (Homebrew ทั้ง formula ที่ตั้งชื่อเวอร์ชัน
-  `php@<version>` และ formula `php` เฉย ๆ ที่เป็นเวอร์ชันปัจจุบันโดยไม่มี
-  การตั้งชื่อเวอร์ชันแยก) เท่านั้น Windows ยังใช้พฤติกรรมเดิม (endpoint
-  TCP แบบ global ตัวเดียว) ไม่เปลี่ยน -- PHP-FPM ไม่มีเวอร์ชัน official
-  บน Windows เลยไม่มี pool ในเครื่องให้ wor จัดการ Linux สาย RHEL ใช้
-  โครงสร้าง package ต่างจาก `/etc/php/<version>/fpm` และยังไม่รองรับ
-  auto-detect (`phpfpm.DetectVersions`)
-- **Lifecycle**: wor เขียนไฟล์ `.conf` ของ pool, validate config ที่ได้
-  ด้วย `php-fpm -t` *ก่อน* แตะอะไรที่ทำงานจริง แล้วค่อย reload php-fpm
-  (`systemctl reload phpX.Y-fpm` บน Linux, `brew services restart
-  php@X.Y` บน macOS -- LaunchAgent wrapper ของ Homebrew ไม่มีคำสั่ง
-  reload) เฉพาะตอนที่ validate ผ่านเท่านั้น ถ้า validate ไม่ผ่านจะ
-  rollback ไฟล์ pool กลับ ไม่ปล่อยให้ config ที่ผิดค้างไว้ให้การ reload
-  จริงครั้งถัดไปสะดุด
-- **Backward compat / ไม่บังคับ migrate**: `domainmodel.Service.PHPVersion`
-  จะว่างเปล่าสำหรับ php service ทุกตัวที่มีอยู่ก่อนฟีเจอร์นี้ และจะว่าง
-  ต่อไปจนกว่าจะมีการสร้าง pool เฉพาะตัวให้จริง ๆ ค่าว่างหมายถึง "ใช้
-  `PHP_FPM_ENDPOINT` แบบเดิมร่วมกันทั้งโฮสต์" -- ตอน render host config
-  (`cliapp.buildWriteParams`) เช็คจาก field นี้ตรง ๆ php service ใหม่จะ
-  ได้ pool เฉพาะตัวอัตโนมัติเมื่อเครื่องตรวจพบ PHP-FPM เพียงเวอร์ชันเดียว
-  `--php-version=` เลือกเมื่อเจอหลายเวอร์ชัน และ `--no-php-pool` กลับไป
-  ใช้ endpoint ร่วมกันแบบเดิมโดยตั้งใจ
+- **Isolation**: its own unix socket, its own `pm.*` values, its own
+  PHP-FPM version. **Unix user isolation differs per OS** (revised from
+  the initial design -- see details below): on Linux each pool gets its
+  own dedicated unix user (created via `useradd --system
+  --no-create-home`); this user is added to the original owning group of
+  the service's document root and given `chmod g+rX` read access -- the
+  document root's original owner is never chown'd. On **macOS every pool
+  runs as the same user that runs the php-fpm master (no more per-service
+  unix users)**.
+- **Platform scope**: Linux (the Debian/Ubuntu `/etc/php/<version>/fpm`
+  layout) and macOS (Homebrew, both the versioned `php@<version>` formulas
+  and the plain `php` formula, which is the current version with no
+  separate version name) only. Windows keeps the old behavior (a single
+  global TCP endpoint), unchanged -- PHP-FPM has no official Windows
+  build, so there is no local pool for wor to manage. RHEL-family Linux
+  uses a different package layout than `/etc/php/<version>/fpm` and is not
+  yet supported by auto-detect (`phpfpm.DetectVersions`).
+- **Lifecycle**: wor writes the pool `.conf` file, validates the resulting
+  config with `php-fpm -t` *before* touching anything live, and only then
+  reloads php-fpm (`systemctl reload phpX.Y-fpm` on Linux,
+  `brew services restart php@X.Y` on macOS -- Homebrew's LaunchAgent
+  wrapper has no reload command), and only when validation passes. If
+  validation fails, the pool file is rolled back, never leaving a broken
+  config behind to trip up the next real reload.
+- **Backward compat / no forced migration**:
+  `domainmodel.Service.PHPVersion` is empty for every php service that
+  predates this feature, and stays empty until a dedicated pool is
+  actually created. An empty value means "use the old host-wide shared
+  `PHP_FPM_ENDPOINT`" -- host config rendering
+  (`cliapp.buildWriteParams`) checks this field directly. New php services
+  automatically get a dedicated pool when the machine detects exactly one
+  PHP-FPM version; `--php-version=` selects one when several are found,
+  and `--no-php-pool` deliberately falls back to the old shared endpoint.
 
-### แก้ไข design 2026-07-05: ยกเลิกการแยก unix user บน macOS
+### Design revision 2026-07-05: dropped unix user isolation on macOS
 
-พบผ่านการทดสอบจริงบนเครื่อง macOS ของ user (ตอนรัน `wor run` กับ php
-service ที่มีอยู่แล้ว): design ตั้งต้นที่ว่า "แยก unix user เต็มรูปแบบทั้ง
-Linux และ macOS" ทำไม่ได้จริงบน macOS เพราะ php-fpm master ที่รันผ่าน
-Homebrew (`brew services start`) รันเป็น login user ปกติ ไม่ใช่ root
-และ process ที่ไม่ใช่ root จะ `chown()` socket ให้เป็นของ unix user อื่น
-หรือสลับ worker ไปรันเป็น user อื่นไม่ได้เลย -- การพยายามทำแบบนั้นทำให้
-เจอ error จริง `failed to chown() the socket` ตอน pool ถูกใช้งานจริง
-เป็นครั้งแรก
+Found through real testing on the user's macOS machine (running `wor run`
+against a pre-existing php service): the initial design of "full unix user
+isolation on both Linux and macOS" is simply not possible on macOS,
+because the php-fpm master run via Homebrew (`brew services start`) runs
+as the normal login user, not root, and a non-root process cannot
+`chown()` a socket to another unix user or switch workers to run as
+another user at all -- attempting it produced the real error
+`failed to chown() the socket` the first time a pool was actually used.
 
-นำเสนอทางเลือกให้ user 2 ทาง (ยก php-fpm master บน macOS ให้รันเป็น root
-เพื่อรักษาการแยกสิทธิ์ไว้ กับ ยกเลิกการแยก unix user บน macOS อย่างเดียว)
-**user เลือกยกเลิกการแยกสิทธิ์บน macOS** Linux ไม่ได้รับผลกระทบ (systemd
-รัน php-fpm เป็น root อยู่แล้ว การแยก unix user ต่อ service ยังทำงานตาม
-design เดิมทุกประการ)
+Two options were presented to the user (elevate the macOS php-fpm master
+to run as root to preserve privilege separation, versus dropping unix user
+isolation on macOS only). **The user chose to drop privilege separation on
+macOS.** Linux is unaffected (systemd already runs php-fpm as root; the
+per-service unix user isolation still works exactly per the original
+design).
 
-ผลคือ pool บน macOS ทุกตัวตอนนี้รันเป็น login user เดียวกับ php-fpm
-master (ไม่เรียก `EnsureUser`/`GrantGroupAccess`/`RemoveUser` เลยบน
-macOS) ส่วน Linux ยังคงเรียก flow เดิมทุกอย่าง (`internal/cliapp/
-service.go` ฟังก์ชัน `setupPHPPool`/`teardownPHPPool` แยก branch ตาม
-`osutil.IsMacOS()`)
+The result is that every macOS pool now runs as the same login user as the
+php-fpm master (`EnsureUser`/`GrantGroupAccess`/`RemoveUser` are never
+called on macOS), while Linux keeps the entire original flow
+(`internal/cliapp/service.go`, the `setupPHPPool`/`teardownPHPPool`
+functions, branching on `osutil.IsMacOS()`).
 
-**ข้อควรรู้**: การแก้นี้ใช้ได้เฉพาะ pool ที่ถูกสร้าง/แก้ไข**หลังจาก**การ
-แก้นี้ deploy แล้วเท่านั้น (ตาม pattern เดิมของฟีเจอร์นี้ที่ไม่มี
-migration บังคับ) php service ที่สร้าง pool ไว้บน macOS ก่อนการแก้นี้
-จะยังมีไฟล์ `.conf` และ unix user เฉพาะตัวแบบเก่าค้างอยู่ ไม่ self-heal
-เอง ต้อง `wor service remove` แล้ว `wor service add` ใหม่ (สำรอง source
-ก่อนด้วย `wor source backup` เพราะ `service remove` จะลบ directory
-ของ service ทิ้งทั้งหมด) ยังไม่มีคำสั่ง "ซ่อม pool ที่มีอยู่แล้วในที่"
-แบบเบา ๆ ให้ใช้
+**Caveat**: this fix applies only to pools created/modified **after** the
+fix was deployed (following this feature's existing no-forced-migration
+pattern). php services whose pools were created on macOS before the fix
+still have the old-style `.conf` files and dedicated unix users lying
+around; they do not self-heal. They must be `wor service remove`d and
+`wor service add`ed again (back up the source first with
+`wor source backup`, because `service remove` deletes the service's
+entire directory). There is no lightweight "repair an existing pool in
+place" command yet.
 
-นอกจากนี้ยังพบว่าการเดาชื่อ Homebrew formula ว่าเป็น `php@<version>`
-เสมอนั้นผิดได้เช่นกัน -- บางเครื่องติดตั้ง PHP ผ่าน formula `php` เฉย ๆ
-(ไม่ตั้งชื่อเวอร์ชัน) โดยที่เวอร์ชันนั้นบังเอิญเป็นเวอร์ชันล่าสุด ไม่มี
-`php@X.Y` keg แยกต่างหากเลย ทำให้การเดา path ของ binary และชื่อ service
-ผิดไปด้วย (`internal/phpfpm` เดิม hardcode `ReloadUnit: "php@" + version`
-เสมอ) แก้โดยเพิ่ม `resolveHomebrewPHPBinary` ที่ลอง path แบบ versioned
-ก่อน แล้ว fallback ไปเช็ค formula `php` เฉย ๆ เฉพาะตอนที่ binary นั้น
-ยืนยันเวอร์ชันตรงกับที่ต้องการจริง ๆ เท่านั้น (เช็คผ่าน `<binary> -v`
-ไม่เดาเอาเฉย ๆ เพื่อไม่ให้เครื่องที่มีหลายเวอร์ชัน PHP ติดตั้งพร้อมกัน
-จับผิดเวอร์ชันกัน)
+It was also discovered that always guessing the Homebrew formula name as
+`php@<version>` can be wrong -- some machines install PHP via the plain
+`php` formula (no version in the name), where that version happens to be
+the latest, with no separate `php@X.Y` keg at all, making both the binary
+path guess and the service name wrong (`internal/phpfpm` used to hardcode
+`ReloadUnit: "php@" + version`). Fixed by adding
+`resolveHomebrewPHPBinary`, which tries the versioned path first and only
+falls back to the plain `php` formula when that binary actually confirms
+the desired version (checked via `<binary> -v`, not guessed, so machines
+with several PHP versions installed at once can't grab the wrong one).
 
-## 9. `wor run`: ทำให้ทุก service ที่ enabled ทำงานอยู่ (ใหม่)
+## 9. `wor run`: make every enabled service run (new)
 
-คำสั่งใหม่ที่ตรวจสอบและสตาร์ทบริการทุกตัวที่ enabled ไว้ทั้งเครื่อง
-พร้อม runtime/web server ที่จำเป็น ตั้งใจตั้งชื่อว่า `run` แทนที่จะเป็น
-`start`/`up` เพราะเป็นคำสั่งทิศทางเดียว -- "ทำให้ระบบอยู่ในสถานะที่
-ต้องการ" คล้าย `terraform apply`/`docker-compose up` ไม่มีคำสั่งคู่แบบ
-`wor down`/`wor stop-all` ตามมา (design ตกลงกันไว้ก่อนเขียนโค้ดผ่านการ
-คุยหลายรอบ)
+A new command that checks and starts every enabled service on the machine,
+along with the runtimes/web server it needs. Deliberately named `run`
+rather than `start`/`up` because it is a one-way command -- "bring the
+system to the desired state," like `terraform apply`/`docker-compose up`
+-- with no paired `wor down`/`wor stop-all` to follow (design agreed
+before coding through several rounds of discussion).
 
-ลำดับการทำงาน:
-1. เช็คทีเดียวก่อนเข้า loop ต่อ service: web server provider ที่ active
-   อยู่ (start ให้ถ้ายังไม่ทำงาน -- เพิ่ม `Provider.IsRunning()`/
-   `Provider.Start()` ใหม่ใน `internal/hostprovider` เพราะเดิมมีแค่
-   `Reload()` ที่สมมติว่า server ทำงานอยู่แล้วเสมอ) และ pm2 daemon
-   (เฉพาะถ้ามี service ที่ต้องใช้ pm2 จริง)
-2. **ปิดช่องโหว่ pm2 boot persistence**: ถ้า `pm2 startup` ไม่เคยถูก
-   ลงทะเบียนบนเครื่องนี้เลย (ไม่มีอะไรใน wor เคยเรียกมันมาก่อน ทำให้
-   service ที่ใช้ pm2 ไม่กลับมาทำงานเองหลัง reboot) จะเสนอลงทะเบียนให้
-   ทันที โดยขอ `pm2 startup` เองก่อนเพื่อเอาคำสั่งที่มันแนะนำมา (pm2 ไม่
-   apply อะไรเอง แค่ print คำสั่ง `sudo ...` ให้ไปรันเอง) แสดงคำสั่งเต็ม
-   ให้ user เห็นก่อนเสมอ แล้วรันผ่าน `osutil.SudoCommand` (confirm-once
-   elevation gate เดียวกับที่อื่นในโปรเจกต์ ไม่ใช่แค่ print ให้ copy-paste
-   เอง)
-3. วน loop ทีละ service ที่ enabled: เช็ค/สตาร์ท runtime ที่ต้องใช้ก่อน
-   (สำหรับ php ที่มี pool เฉพาะตัว -- เพิ่ม `phpfpm.IsRunning()`/
-   `phpfpm.Start()` ใหม่ด้วยเหตุผลเดียวกับ web server provider) แล้วค่อย
-   สตาร์ท service เอง ถ้ายังไม่ทำงาน (pm2/systemd ใช้ path เดียวกับที่
-   `wor service start` ใช้อยู่แล้ว)
+Order of operations:
+1. One-time checks before the per-service loop: the active web server
+   provider (started if not running -- new `Provider.IsRunning()`/
+   `Provider.Start()` added to `internal/hostprovider`, since previously
+   there was only `Reload()`, which always assumed the server was already
+   running) and the pm2 daemon (only if any service actually needs pm2).
+2. **Close the pm2 boot-persistence gap**: if `pm2 startup` has never been
+   registered on this machine (nothing in wor ever called it, so
+   pm2-backed services never came back after a reboot), it offers to
+   register it right away: it first runs `pm2 startup` itself to obtain
+   the suggested command (pm2 applies nothing itself, it only prints a
+   `sudo ...` command for you to run), always shows the user the full
+   command first, then runs it via `osutil.SudoCommand` (the same
+   confirm-once elevation gate used elsewhere in the project, not just
+   printing it for manual copy-paste).
+3. Loop over each enabled service: check/start the runtime it needs first
+   (for php with a dedicated pool -- new `phpfpm.IsRunning()`/
+   `phpfpm.Start()` added for the same reason as the web server provider),
+   then start the service itself if it is not running (pm2/systemd use the
+   same path `wor service start` already uses).
 
-service ที่ล้มเหลวจะถูกข้ามไป ไม่ทำให้คำสั่งทั้งหมดหยุด แสดงผลทีละ
-service เป็น ok/fail ระหว่างทาง จบด้วยสรุปบรรทัดเดียวว่าสำเร็จ/ล้มเหลวกี่
-service
+Failed services are skipped and do not abort the whole command. Results
+are shown per service as ok/fail along the way, ending with a one-line
+summary of how many succeeded/failed.
 
-### บันทึกจากการทดสอบจริง (ต้องพึ่ง output จริงถึงจะวินิจฉัยถูก)
+### Notes from real testing (correct diagnosis required real output)
 
-หลายจุดของ `wor run` วินิจฉัยไม่ถูกจนกว่าจะเห็น output จริงจากเครื่อง
-user เท่านั้น เป็นบทเรียนสำคัญว่าฟีเจอร์ที่พึ่งพา behavior ของเครื่องมือ
-ภายนอก (pm2, Homebrew, launchd) verify ด้วยการอ่านโค้ดอย่างเดียวไม่พอ:
+Several parts of `wor run` could not be diagnosed correctly until real
+output from the user's machine was seen. An important lesson: features
+that depend on external tools' behavior (pm2, Homebrew, launchd) cannot be
+verified by reading code alone:
 
-- **platform keyword ของ `pm2 startup`**: เดาผิดว่า macOS ใช้คำว่า
-  `launchd` (จริง ๆ ไม่ใช่ keyword ที่ pm2 รู้จัก) แก้โดยไม่ส่ง platform
-  argument เลย ปล่อยให้ pm2 auto-detect เอง
-- **exit code ของ `pm2 startup` ไม่ใช่ signal ความสำเร็จที่เชื่อถือได้**:
-  แม้ตอนที่ pm2 ทำงานสำเร็จปกติ (detect platform ได้ print คำสั่งแนะนำ
-  ออกมาถูกต้อง) exit code ก็ยังไม่ใช่ 0 แก้โดยเช็คจากเนื้อหา output ว่ามี
-  บรรทัด `sudo ...` หรือไม่ แทนการเช็ค exit code
-- **`$PATH` ไม่ขยายค่าถ้าไม่ผ่าน shell จริง**: คำสั่งที่ pm2 แนะนำมี
-  `env PATH=$PATH:/usr/local/bin ...` ซึ่งต้องให้ shell ขยายค่า `$PATH`
-  ก่อนที่ `env`/`sudo` จะเห็น ถ้า exec คำสั่งตรง ๆ (แยกเป็น argv เอง)
-  `$PATH` จะไม่ถูกขยาย กลายเป็น string ดิบที่มีเครื่องหมาย `$` ติดไปด้วย
-  ทำให้ PATH ที่ตั้งจริงพัง (`mkdir` หาไม่เจอ) แก้โดยรันทั้งบรรทัดผ่าน
-  `sh -c` แทนการ parse เป็น argv เอง
+- **`pm2 startup` platform keyword**: wrongly guessed that macOS uses the
+  word `launchd` (not actually a keyword pm2 recognizes). Fixed by passing
+  no platform argument at all and letting pm2 auto-detect.
+- **`pm2 startup`'s exit code is not a reliable success signal**: even
+  when pm2 succeeds normally (detects the platform and prints the correct
+  suggested command), the exit code is still non-zero. Fixed by checking
+  the output content for a `sudo ...` line instead of the exit code.
+- **`$PATH` doesn't expand without a real shell**: the command pm2
+  suggests contains `env PATH=$PATH:/usr/local/bin ...`, which needs a
+  shell to expand `$PATH` before `env`/`sudo` see it. Exec'ing the command
+  directly (splitting argv yourself) leaves `$PATH` unexpanded as a raw
+  string with a literal `$`, breaking the effective PATH (`mkdir` not
+  found). Fixed by running the whole line through `sh -c` instead of
+  parsing argv manually.
 
-## 10. รีดีไซน์ `wor service status` และ `wor host list`
+## 10. Redesign of `wor service status` and `wor host list`
 
-`service status` เดิมแค่เรียก `pm2 status` ตรง ๆ ทำให้เห็นแค่ node
-service เท่านั้น go/python (ที่ใช้ systemd บน Linux) กับ php/static
-service มองไม่เห็นเลย ตอนนี้จะรวบรวม service ที่ enabled ทุกตัวจากทุก
-domain (`Store.ListAllServices`) แล้วจัดกลุ่มตาม process provider จริง
-(`domainmodel.ProcessProviderFor`) query สถานะจริงของแต่ละ provider:
-`pm2 jlist` ครั้งเดียวสำหรับ node service ทั้งหมด บวกกับการ sample
-`systemctl` แบบ batch ครั้งเดียว (`systemd.GetInfoBatch`) สำหรับ go/python
-ทั้งหมด เพื่อให้ค่าใช้จ่ายในการ query ของ pm2/systemd เกิดขึ้นแค่ครั้งเดียว
-ไม่ว่าจะมีกี่ service php (สมมติว่า php-fpm ทำงานอยู่แล้ว) กับ static
-(ไม่มี process) ไม่มีอะไรให้ query เลยจึงแสดงสถานะ n/a แทนที่จะถูกซ่อน
-ไปเฉย ๆ
+`service status` used to just call `pm2 status` directly, showing only
+node services -- go/python (systemd on Linux) and php/static services were
+invisible. It now gathers every enabled service from every domain
+(`Store.ListAllServices`), groups them by actual process provider
+(`domainmodel.ProcessProviderFor`), and queries each provider's real
+status: one `pm2 jlist` for all node services, plus one batched
+`systemctl` sample (`systemd.GetInfoBatch`) for all go/python services, so
+the pm2/systemd query cost is paid once regardless of service count. php
+(assumed php-fpm already running) and static (no process) have nothing to
+query, so they show an n/a status instead of being silently hidden.
 
-`host list` เดิมแค่ dump รายชื่อไฟล์ `.conf` ใน sites-available ตอนนี้
-เทียบ sites-available กับ sites-enabled เพื่อแบ่งกลุ่ม ENABLED/DISABLED
-พร้อมแสดง target ที่ resolve แล้ว (`domain/service`), port, และ badge SSL
-ของแต่ละ site ด้วย
+`host list` used to just dump the `.conf` filenames in sites-available. It
+now compares sites-available against sites-enabled to split
+ENABLED/DISABLED, showing each site's resolved target (`domain/service`),
+port, and SSL badge.
 
-ทั้งสองคำสั่ง render ผ่าน helper ร่วมกันใน `internal/cliapp/statusview.go`:
-ใช้สี ANSI เมื่อเป็น terminal จริง, ใช้ tag แบบวงเล็บธรรมดา
-(`[ok]`/`[fail]`/`[on]`/`[off]`/`[ssl]`) เมื่อไม่ใช่ (ปิดสีได้ผ่าน env
-`NO_COLOR`) ไม่ใช้ library สีจากภายนอกเลย (โปรเจกต์นี้ตั้งเป้าไม่มี
-third-party dependency)
+Both commands render through shared helpers in
+`internal/cliapp/statusview.go`: ANSI colors on a real terminal, plain
+bracket tags (`[ok]`/`[fail]`/`[on]`/`[off]`/`[ssl]`) otherwise (colors
+can be disabled via the `NO_COLOR` env var). No external color library at
+all (this project aims for zero third-party dependencies).
 
-## 11. รีดีไซน์ `wor doctor`
+## 11. Redesign of `wor doctor`
 
-จากรูปแบบเดิมที่ยาวและมีหัวข้อ Environment/Directories/Required-Optional
--Dependencies/Result/"WOR Ready"/"Next" เปลี่ยนเป็น checklist แบบ
-✓/⚠/✗ เรียบ ๆ จัดกลุ่มเป็น Environment (ย่อเหลือแค่ OS/WOR_ENV/WOR_HOME/
-Config/Host Provider + บรรทัดเดียวสรุปว่า workspace initialize แล้วหรือ
-ยัง), Runtimes, Database, Other Tools -- ไม่มีส่วน "Result" ปิดท้ายอีก
-ต่อไป
+From the old long format with Environment/Directories/Required-Optional
+-Dependencies/Result/"WOR Ready"/"Next" sections, changed to a plain
+✓/⚠/✗ checklist grouped into Environment (trimmed to just
+OS/WOR_ENV/WOR_HOME/Config/Host Provider + a single line stating whether
+the workspace is initialized), Runtimes, Database, Other Tools -- no
+closing "Result" section anymore.
 
-PHP/Node.js/Python/Go จะเป็น ✗ ทันทีถ้าไม่ได้ติดตั้ง (ตัดเงื่อนไขเดิมที่
-เช็คว่า "มี service ที่ต้องใช้ runtime นี้จริงไหม" ออกไปทั้งหมด) Nginx
-กับ Apache แสดงทั้งคู่ถ้าต่างก็ติดตั้งอยู่ (ติด label "(active)" ให้ตัวที่
-ตรงกับ HOST_PROVIDER) และจะเป็น ✗ เฉพาะถ้าตัวที่ *active* หายไป (host
-provider ไม่ตรงกับที่ติดตั้งจริง) -- ตัวที่ไม่ได้ active ขาดหายไปไม่ถือ
-เป็นปัญหา ฐานข้อมูล (MySQL Client/Server, MariaDB, PostgreSQL, Redis,
-SQLite) กับเครื่องมืออื่น (git/zip/gzip) เป็น optional เสมอ ขาดไปแค่ ⚠
-ไม่ใช่ ✗
+PHP/Node.js/Python/Go are ✗ immediately if not installed (the old
+condition checking "is there actually a service needing this runtime?"
+was removed entirely). Nginx and Apache are both shown if both are
+installed (with an "(active)" label on the one matching HOST_PROVIDER),
+and are ✗ only if the *active* one is missing (host provider doesn't
+match what's actually installed) -- a missing non-active one is not a
+problem. Databases (MySQL Client/Server, MariaDB, PostgreSQL, Redis,
+SQLite) and other tools (git/zip/gzip) are always optional; missing ones
+are only ⚠, not ✗.
 
-## 12. รีดีไซน์การยืนยันของ `wor domain remove`
+## 12. Redesign of `wor domain remove` confirmation
 
-`domain remove` **ไม่มี** flag `--cascade`/force ใด ๆ เลย -- บล็อกทันที
-ถ้า `services.config.json` ของ domain ยังมี service อยู่แม้แต่ตัวเดียว
-(ต่อให้หยุดทำงานแล้วก็ตาม) แสดง service ที่ค้างพร้อมคำสั่งแก้ที่ชัดเจน
-(`wor service remove <domain>/<service>`) เพราะ "domain" ในความหมายของ
-wor คือแค่โฟลเดอร์ config/source เท่านั้น ไม่ครอบคลุมถึง process
-pm2/systemd หรือ host config ของ service เลย -- ต้องเคลียร์ผ่าน
-`service remove` ก่อน (ซึ่งจัดการความสะอาดส่วนนั้นอยู่แล้ว)
+`domain remove` has **no** `--cascade`/force flags at all -- it blocks
+immediately if the domain's `services.config.json` still has even one
+service (even a stopped one), listing the remaining services with the
+exact fix command (`wor service remove <domain>/<service>`), because a
+"domain" in wor's sense is only a config/source folder -- it does not
+cover the services' pm2/systemd processes or host configs at all; those
+must be cleared through `service remove` first (which already handles
+that cleanup).
 
-เมื่อไม่มี service เหลือแล้ว จะถามทีละขั้นตอนแบบ `[Y/n]` (default yes)
-เรียงลำดับ **Backups -> Logs -> Web Data**: Backups/Logs แค่ถูก
-"บันทึกการตัดสินใจ" ไว้ (พร้อม preview ทันทีว่าจะลบหรือเก็บ) ยังไม่มี
-อะไรถูกลบจริง **Web Data ที่ถามเป็นคำถามสุดท้ายคือจุดยืนยันของทั้งชุด**:
-ตอบ "n" จะยกเลิกทั้งหมด (Backups/Logs ที่เลือกไว้ก่อนหน้าจะถูกทิ้งไปเฉย ๆ
-ไม่ถูกลบ) ตอบ "y" จะรันทั้งสามอย่างตามที่เลือกไว้ในคราวเดียว (Backups
-ก่อน แล้ว Logs แล้วค่อย Web Data เอง)
+Once no services remain, it asks step by step with `[Y/n]` (default yes)
+in the order **Backups -> Logs -> Web Data**: Backups/Logs only have
+their "decision recorded" (with an immediate preview of delete-or-keep);
+nothing is actually deleted yet. **Web Data, asked last, is the
+confirmation point for the whole set**: answering "n" cancels everything
+(the Backups/Logs choices made earlier are simply discarded, nothing is
+deleted), answering "y" runs all three as chosen in one go (Backups
+first, then Logs, then Web Data itself).
 
-## 13. `wor source backup` กรองไฟล์ผ่าน `.gitignore`
+## 13. `wor source backup` filters files through `.gitignore`
 
-ค่าเริ่มต้น (เปิดไว้) จะกรองไฟล์ที่ zip ผ่าน `.gitignore` ของ source
-tree เองด้วย ไม่ใช่แค่ exclude list ที่ตั้งไว้ใน `backup.config.json`
-เท่านั้น package ใหม่ `internal/gitignore` (ไม่มี dependency ภายนอก
-ตาม policy ของโปรเจกต์) เป็น matcher ที่ **ตั้งใจอ่านแค่ `.gitignore`
-ไฟล์เดียวที่ root** ของ directory ที่กำลัง zip ไม่รองรับ `.gitignore`
-ซ้อนในแต่ละ subfolder แบบที่ git จริงทำ (trade-off ที่เลือกไว้เพื่อไม่
-ต้องเขียน matcher เต็มรูปแบบที่ซับซ้อนกว่านี้มาก) รองรับ comment,
-บรรทัดว่าง, negation ด้วย `!`, การ anchor ด้วย `/` นำหน้า/กลาง,
-directory-only ด้วย `/` ท้าย, และ wildcard `*`/`?`/`[...]`/`**` --
-กฎล่าสุดที่ match ชนะเหมือน git จริง `wor source backup <target>
---gitignore=enable|disable` override ค่า default นี้ได้แค่ครั้งเดียว
-โดยไม่แก้ config
+By default (enabled), files being zipped are also filtered through the
+source tree's own `.gitignore`, not just the exclude list configured in
+`backup.config.json`. The new package `internal/gitignore` (no external
+dependencies, per project policy) is a matcher that **deliberately reads
+only the single `.gitignore` file at the root** of the directory being
+zipped; nested per-subfolder `.gitignore` files as real git supports are
+not handled (a trade-off chosen to avoid writing a far more complex
+full-blown matcher). It supports comments, blank lines, negation with
+`!`, anchoring with a leading/medial `/`, directory-only patterns with a
+trailing `/`, and the `*`/`?`/`[...]`/`**` wildcards -- last matching
+rule wins, as in real git. `wor source backup <target>
+--gitignore=enable|disable` overrides this default for a single run
+without modifying config.
 
-## 14. `wor source clone` ไม่ต้องใส่ `--replace` อีกต่อไป
+## 14. `wor source clone` no longer needs `--replace`
 
-ถ้า target มี source อยู่แล้ว จะสำรอง (ผ่าน `wor source backup`) แล้ว
-แทนที่ให้อัตโนมัติเสมอ ไม่ต้องใส่ flag ใด ๆ เพิ่ม (`--replace` ถูกตัด
-ออกจาก usage แล้ว ถ้ามี script เก่าที่ยังส่ง flag นี้มาก็แค่ถูกเพิกเฉย
-ไม่ error) การแทนที่จะย้าย tree เดิมไปพักไว้ก่อนเสมอ (ไม่ลบทิ้งตรง ๆ)
-แล้วค่อยทิ้งของเก่าจริง ๆ ก็ต่อเมื่อย้าย tree ใหม่เข้าที่สำเร็จแล้ว
-เท่านั้น ถ้าย้ายไม่สำเร็จจะย้ายของเก่ากลับมาที่เดิมให้ (rollback)
+If the target already has source, it is always backed up (via
+`wor source backup`) and replaced automatically, with no extra flag
+(`--replace` has been removed from usage; old scripts still passing it
+are simply ignored, not errored). The replacement always moves the old
+tree aside first (never deletes it outright) and only truly discards the
+old one after the new tree has been moved into place successfully. If the
+move fails, the old tree is moved back (rollback).
 
-การย้าย directory (`moveDir`) จะลอง `os.Rename` ก่อน (เร็วกว่า) แล้ว
-fallback ไปเป็น copy+remove ถ้า rename ล้มเหลวแบบ "invalid cross-device
-link" (เกิดได้เมื่อ tmp directory ที่ configure ไว้กับ WOR_HOME อยู่คนละ
-filesystem กัน) ไม่ได้พยายามตรวจ errno เฉพาะแบบข้าม Linux/macOS/Windows
--- rename ล้มเหลวแบบไหนก็ fallback ไป copy เหมือนกันหมด
+Directory moves (`moveDir`) try `os.Rename` first (faster), then fall
+back to copy+remove if the rename fails with "invalid cross-device link"
+(possible when the configured tmp directory and WOR_HOME are on different
+filesystems). It makes no attempt to inspect specific errnos across
+Linux/macOS/Windows -- any rename failure falls back to copy the same
+way.
 
-## 15. `wor database add`/`remove`: เข้มงวดกับ validation มากขึ้น
+## 15. `wor database add`/`remove`: stricter validation
 
-`add` ไม่สร้าง domain ให้อัตโนมัติอีกต่อไป -- error ทันทีว่า "domain not
-found" ถ้า `WOR_HOME/domains/<domain>` ยังไม่มีอยู่จริง โปรไฟล์ที่ซ้ำกัน
-(มีอยู่แล้วใน `databases.config.json`) ไม่ error แต่พิมพ์ `[WARN]`
-เตือนแทน (ไม่แตะ label/.env เดิม) `remove` error ถ้า domain ไม่มีอยู่จริง
-และ error ถ้าโปรไฟล์ไม่ได้ลงทะเบียนไว้ (เดิมเป็น no-op เงียบ ๆ ทั้งสอง
-กรณี) และแก้บั๊กจริงที่พบ: `remove` เดิมไม่เคยลบไฟล์ `<profile>.env`
-ใต้ `configs/database/` เลย ลบแค่ entry ใน config ตอนนี้ลบไฟล์ `.env`
-ด้วย (ถ้าไฟล์หายไปแล้วก็แค่เตือน ไม่ error)
+`add` no longer auto-creates the domain -- it errors immediately with
+"domain not found" if `WOR_HOME/domains/<domain>` does not actually
+exist. A duplicate profile (already present in `databases.config.json`)
+does not error but prints a `[WARN]` instead (leaving the existing
+label/.env untouched). `remove` errors if the domain does not exist, and
+errors if the profile is not registered (both used to be silent no-ops).
+It also fixes a real bug found: `remove` never deleted the
+`<profile>.env` file under `configs/database/`, only the config entry. It
+now deletes the `.env` file too (if the file is already gone, it only
+warns, not errors).
 
-## Known gaps / สิ่งที่ยังต้อง verify
+## Known gaps / still to verify
 
-- **Build/run จริงแล้วบางส่วน**: ตอน port ครั้งแรก sandbox ที่ใช้เขียน
-  ไม่มี Go toolchain เลย โค้ดตอนนั้นไม่เคยถูก compile หลังจากนั้น user ได้
-  `go build`/รันจริงบนเครื่อง macOS ของตัวเองแล้ว (`./scripts/build.sh`)
-  พบและแก้บั๊กจริงหลายจุดที่อ่านโค้ดอย่างเดียวมองไม่เห็น (ดูหัวข้อ 8/9
-  ด้านบน) แต่ยังไม่ได้ทดสอบครบทุก path บนเครื่องจริง โดยเฉพาะ:
-  - `wor run`'s pm2-startup registration flow ผ่านการแก้ไข 3 รอบแล้ว
-    (platform keyword ผิด -> เช็ค exit code ผิด -> `$PATH` ไม่ขยายค่า)
-    รอบล่าสุดยังไม่ได้รับการยืนยันจาก user ว่าทำงานสำเร็จจริง
-  - Per-service php-fpm pool: ยืนยันแล้วว่าใช้งานได้จริงบน macOS หลัง
-    แก้เรื่อง unix user (หัวข้อ 8) แต่ยังไม่เคยทดสอบบน Linux จริงเลย
-    (ทั้ง `useradd`, `php-fpm -t`, `systemctl reload`)
-- Path default ของ nginx/apache บน Windows (หัวข้อ 3) เป็นแค่ convention
-  ที่เดาไว้ ไม่เคย verify กับ nginx/Apache ตัวจริงบน Windows เลย --
-  คาดว่าต้อง override ผ่าน `host.env` อย่างน้อยหนึ่งครั้ง
-- PM2 บน Windows: ตัว PM2 เองเป็น npm package ควรทำงานได้ แต่ยังไม่เคย
-  ถูกทดสอบเป็นส่วนหนึ่งของการพอร์ตนี้เลย
-- flag แบบ single-dash สั้น ๆ ที่ shell เวอร์ชันเดิมรับ (เช่น `-y` คู่กับ
-  `--yes`) ตัว flag parser ของ Go (`internal/cliapp/args.go`) ไม่รองรับ
-  -- ใช้ได้แค่ฟอร์มยาวเท่านั้น เพิ่มได้ไม่ยากถ้ามี script ที่พึ่งฟอร์มสั้น
-  อยู่
-- Linux สาย RHEL ใช้โครงสร้าง php-fpm package ต่างจาก
-  `/etc/php/<version>/fpm` และยังไม่รองรับ auto-detect
-  (`phpfpm.DetectVersions`)
-- php service ที่สร้าง per-service pool ไว้บน macOS **ก่อน**การแก้ไข
-  เรื่อง unix user (หัวข้อ 8) จะยังมี pool `.conf`/unix user แบบเก่าค้าง
-  อยู่ ไม่ self-heal เอง ต้อง remove+add ใหม่ด้วยมือ ยังไม่มีคำสั่ง
-  "ซ่อม pool ที่มีอยู่ในที่" แบบเบา ๆ ให้ใช้
+- **Partially built/run for real**: during the initial port, the sandbox
+  used for writing had no Go toolchain at all, so the code was never
+  compiled then. Since then the user has run `go build`/executed it for
+  real on their own macOS machine (`./scripts/build.sh`), finding and
+  fixing several real bugs invisible to code reading alone (see sections
+  8/9 above), but not every path has been tested on a real machine yet.
+  In particular:
+  - `wor run`'s pm2-startup registration flow has been through 3 rounds
+    of fixes (wrong platform keyword -> wrong exit-code check -> `$PATH`
+    not expanding); the latest round has not yet been confirmed by the
+    user as actually working.
+  - Per-service php-fpm pool: confirmed working on macOS after the unix
+    user fix (section 8), but never tested on real Linux at all
+    (`useradd`, `php-fpm -t`, `systemctl reload`).
+- The default nginx/apache paths on Windows (section 3) are only guessed
+  conventions, never verified against real nginx/Apache on Windows --
+  expect to override via `host.env` at least once.
+- PM2 on Windows: PM2 itself is an npm package and should work, but it
+  has never been tested as part of this port.
+- Short single-dash flags accepted by the old shell version (e.g. `-y`
+  alongside `--yes`) are not supported by the Go flag parser
+  (`internal/cliapp/args.go`) -- only the long forms work. Easy to add if
+  some script depends on the short forms.
+- RHEL-family Linux uses a php-fpm package layout different from
+  `/etc/php/<version>/fpm` and is not yet supported by auto-detect
+  (`phpfpm.DetectVersions`).
+- php services whose per-service pools were created on macOS **before**
+  the unix user fix (section 8) still have the old-style pool
+  `.conf`/unix user left behind; they do not self-heal and must be
+  removed+added again manually. There is no lightweight "repair an
+  existing pool in place" command yet.
