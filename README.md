@@ -183,3 +183,12 @@ internal/
   hostsfile/              WOR-managed block in /etc/hosts or the Windows hosts file
   cliapp/                 every subcommand, wired together
 ```
+
+## Official Builds
+
+Official releases are available only from:
+
+- https://wor.worapong.com
+- https://github.com/team-worapong/wor
+
+Modified builds should clearly identify themselves as modified.
