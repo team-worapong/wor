@@ -18,6 +18,10 @@ dist/
 /backups/
 backups/
 
+# Local public
+/public/
+public/
+
 # Test binary, built with `go test -c`
 *.test
 
