@@ -186,9 +186,23 @@ internal/
 
 ## Official Builds
 
-Official releases are available only from:
+Official releases are published at:
 
 - https://wor.worapong.com
 - https://github.com/team-worapong/wor
 
-Modified builds should clearly identify themselves as modified.
+Modified builds should clearly identify themselves as modified and must not imply they are official WOR releases.
+Proudly developed in Thailand 🇹🇭
+
+## Maintainer
+
+**Worapong Sriwichian** Team (^_^)!
+
+Creator and maintainer of WOR Runtime Manager.
+
+- Website: https://www.worapong.com
+- GitHub: https://github.com/team-worapong
+
+Copyright © 2026 Worapong Sriwichian.
+
+Licensed under the Apache License 2.0.
