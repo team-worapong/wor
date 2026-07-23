@@ -474,12 +474,16 @@ func (a *App) buildWriteParams(provider *hostprovider.Provider, host, domain, se
 	// template (see lib/webserver.sh); process-supervised templates'
 	// (node/go/python) apache vhosts simply never reference
 	// {{DOCUMENT_ROOT}} so the value is harmlessly unused there.
-	docRoot := filepath.Join(a.Store.ServiceDir(domain, service), "public")
+	serviceDir := a.Store.ServiceDir(domain, service)
+	docRoot := filepath.Join(serviceDir, "public")
 	params := hostprovider.WriteParams{
 		Host: host, Domain: domain, Service: service, SvcType: svcType, Port: port,
 		SiteFile: siteFile, Aliases: aliases, Preferred: preferred,
 		DefaultPublicPath: filepath.Join(a.Cfg.Domains, "default", "web", "public"),
 		DocumentRoot:      docRoot,
+		// The generated vhost includes any *.conf a user drops into
+		// <serviceDir>/.wor/<provider>; see writeCustomConfigScaffold.
+		CustomConfigBaseDir: filepath.Join(serviceDir, ".wor"),
 	}
 	if domainmodel.TemplateRequiresPHP(svcType) {
 		// A non-empty PHPVersion means this service has its own
@@ -522,13 +526,19 @@ func (a *App) buildWriteParams(provider *hostprovider.Provider, host, domain, se
 	return params, nil
 }
 
-// writeHostConfig builds params for host and writes the vhost file.
+// writeHostConfig builds params for host and writes the vhost file, then
+// (best-effort) refreshes the per-service custom-config scaffold the
+// generated vhost includes.
 func (a *App) writeHostConfig(provider *hostprovider.Provider, host, domain, service, svcType string, port int, siteFile string, aliases []string, preferred string) error {
 	params, err := a.buildWriteParams(provider, host, domain, service, svcType, port, siteFile, aliases, preferred)
 	if err != nil {
 		return err
 	}
-	return provider.WriteConfig(params)
+	if err := provider.WriteConfig(params); err != nil {
+		return err
+	}
+	a.writeCustomConfigScaffold(provider, params)
+	return nil
 }
 
 func (a *App) hostRemove(host string, fl flags) error {

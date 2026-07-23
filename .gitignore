@@ -18,9 +18,10 @@ dist/
 /backups/
 backups/
 
-# Local public
-/public/
-public/
+# Public web app (docs + download site) is tracked in git.
+# Only the large built release archives it serves are kept out.
+/public/download/releases/
+public/download/releases/
 
 AGENTS.md
 

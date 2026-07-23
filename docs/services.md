@@ -76,3 +76,34 @@ command reports which process provider is active on the current machine.
       - Windows always uses the shared PHP_FPM_ENDPOINT -- PHP-FPM has no
         official Windows build, so there is no local pool for wor to
         manage.
+    PATH_INFO routing:
+      - the generated nginx/apache config supports front-controller URLs
+        of the form `/index.php/controller/action` (PATH_INFO). nginx
+        matches `\.php(/|$)`, splits the script from the path with
+        `fastcgi_split_path_info`, and passes `PATH_INFO`; apache sets
+        `AcceptPathInfo On`. This fixes a redirect loop that framework
+        routers hit when PATH_INFO was missing. See DESIGN.md section 16.
+
+Custom web-server config per service
+
+Every host wor generates includes any `*.conf` file a user drops into the
+service's own custom-config directory:
+
+    WOR_HOME/domains/<domain>/<service>/.wor/<nginx|apache>/*.conf
+
+- nginx snippets are included inside the service's `server { }` block;
+  apache snippets inside its `<VirtualHost>` (both :80 and :443) -- in
+  both cases right after wor's own generated directives.
+- The include is always present in the generated vhost and uses a
+  wildcard (`include`/`IncludeOptional`), so an empty or missing
+  directory is never an error: drop a file in any time and run
+  `wor host reload`.
+- You may ADD directives/locations. On nginx you may NOT redefine a
+  `location` wor already emits (e.g. `location /`, `location ~ \.php`) --
+  nginx rejects duplicate locations on reload. To change wor's core
+  routing itself, edit nginx's main config directly.
+- wor writes a non-loaded reference file, `default.conf.example`, into
+  that directory. It shows wor's current default config for the service
+  plus these rules. It does not end in `.conf`, so it is never loaded,
+  and wor regenerates it on each host write -- do not edit it in place;
+  copy it to a new `*.conf` file to build on it.

@@ -437,6 +437,80 @@ It also fixes a real bug found: `remove` never deleted the
 now deletes the `.env` file too (if the file is already gone, it only
 warns, not errors).
 
+## 16. PHP templates support PATH_INFO (front-controller URLs)
+
+The first PHP templates only matched `location ~ \.php$` (nginx) and
+relied on Apache's default path-info handling. That broke framework
+routers that use front-controller URLs like
+`/index.php/controller/action` (PATH_INFO): nginx never routed such a URL
+to the PHP handler (it does not end in `.php`), so it fell through
+`try_files` to a bare `/index.php` with an empty `PATH_INFO`, and a
+router expecting PATH_INFO would emit its canonical redirect -- producing
+an infinite redirect loop.
+
+Fixes (in `internal/templates/assets/{nginx,apache}/php.conf`):
+
+- nginx now matches `location ~ \.php(/|$)`, splits the script path from
+  the trailing path with `fastcgi_split_path_info ^(.+?\.php)(/.*)$`, and
+  passes `fastcgi_param PATH_INFO $fastcgi_path_info`. A guard,
+  `if (!-f $document_root$fastcgi_script_name) { return 404; }`, is added
+  because widening the match to `\.php(/|$)` otherwise lets a request like
+  `/uploads/evil.jpg/x.php` reach PHP; the guard rejects it unless the
+  resolved script actually exists (the nginx.com-recommended hardening,
+  safe even if `cgi.fix_pathinfo=1`).
+- apache adds `AcceptPathInfo On` to the service `<Directory>` block.
+  Apache's `<FilesMatch "\.php$">` already matches on the resolved real
+  file, so the ACE case above is inherently blocked; the only missing
+  piece was `AcceptPathInfo`, which by default 404s trailing path-info on
+  a real file.
+
+Existing already-generated vhosts do not self-heal -- they must be
+regenerated (re-run the host write) to pick up the new templates.
+
+## 17. Per-service custom web-server config include
+
+Each generated vhost now includes any `*.conf` a user drops into the
+service's own directory:
+
+    WOR_HOME/domains/<domain>/<service>/.wor/<nginx|apache>/*.conf
+
+Rationale and shape:
+
+- The vhost is fully regenerated from templates on every write, so
+  anything a user customizes must live *outside* that file. A separate
+  per-service directory pulled in via `include` (nginx) /
+  `IncludeOptional` (apache) is the way to let users extend the vhost
+  without their edits being overwritten.
+- The directory lives under a `.wor/` namespace inside the service dir,
+  not a bare `config/`, specifically to avoid colliding with the many app
+  frameworks that ship their own `config/` at the repo root (the service
+  dir *is* the deploy root). `.wor/nginx/` and `.wor/apache/` are separate
+  so switching web server picks up the right set automatically.
+- The include is emitted unconditionally and uses a wildcard, which both
+  nginx and `IncludeOptional` tolerate when the directory is empty or
+  missing -- so users can add snippets at any time and just
+  `wor host reload`, with no hidden "did you opt in at create time" state.
+- Snippets are included *after* wor's own service directives, inside the
+  `server`/`<VirtualHost>` block. On nginx a snippet may ADD locations but
+  may not redefine one wor already emits (nginx errors on duplicate
+  `location`); heavy overrides belong in nginx's main config, which any
+  operator doing that already knows. This "light additions only" scope is
+  the intended one.
+- wor writes a non-loaded reference file, `default.conf.example`, into the
+  directory on each host write. It deliberately does not end in `.conf`
+  (so the `*.conf` include never loads it) and contains wor's current
+  default service block plus the rules above, so a developer can see
+  exactly what wor generates and copy it as a starting point. It is
+  regenerated each write and must not be edited in place.
+
+Implementation: `hostprovider.WriteParams.CustomConfigBaseDir` carries the
+service's `.wor` path; the nginx/apache providers emit the include from
+it (`nginxCustomInclude`/`apacheCustomInclude`) and expose
+`RenderServiceConfig` so `cliapp.writeCustomConfigScaffold`
+(`internal/cliapp/customconfig.go`) can (best-effort) create the directory
+and refresh the reference file. A failure scaffolding never blocks writing
+the vhost, since the include tolerates a missing directory.
+
 ## Known gaps / still to verify
 
 - **Partially built/run for real**: during the initial port, the sandbox

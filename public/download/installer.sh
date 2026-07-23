@@ -21,7 +21,7 @@ BASE_URL="https://wor.worapong.com/download/releases"
 
 usage() {
     cat <<EOF
-WOR Runtime Manager Installer
+WOR Host Installer
 
 Usage:
   bash installer.sh

@@ -316,22 +316,32 @@ func apacheSSLChainFileLine(chainFile string) string {
 	return fmt.Sprintf("SSLCertificateChainFile %q", chainFile)
 }
 
-func (a *apacheProvider) writeConfig(p WriteParams, siteFile string) error {
-	serviceTemplate, err := templates.Get("apache", p.SvcType+".conf")
-	if err != nil {
-		return err
+// apacheCustomInclude returns the directive that pulls a service's
+// user-supplied *.conf snippets into its VirtualHost, or "" when no
+// custom-config base directory is set. The snippets live in
+// <base>/apache and are pulled in with IncludeOptional (not Include) so
+// that an empty or missing directory is not an error -- users can drop
+// files in later without regenerating the vhost.
+func apacheCustomInclude(base string) string {
+	if base == "" {
+		return ""
 	}
-	httpTemplate, err := templates.Get("webserver/apache", "http.conf")
-	if err != nil {
-		return err
-	}
+	dir := filepath.Join(base, "apache")
+	return fmt.Sprintf("# Custom config (wor): drop *.conf files into %s\n    IncludeOptional %q", dir, filepath.Join(dir, "*.conf"))
+}
 
+// baseVars builds the template variables shared by the service template
+// (php.conf/static.conf/...) and both VirtualHost templates
+// (webserver/apache/{http,https}.conf). Composite values rendered from
+// one template into another (APACHE_SERVICE_CONFIG, APACHE_HTTPS_VHOST,
+// APACHE_CUSTOM_INCLUDE) are added by writeConfig, not here, so this map
+// is safe to reuse for a standalone service render.
+func (a *apacheProvider) baseVars(p WriteParams) map[string]string {
 	documentRootLine := ""
 	if a.documentRootTemplate(p.SvcType) {
 		documentRootLine = apacheDocumentRootLine(p.DocumentRoot)
 	}
-
-	vars := map[string]string{
+	return map[string]string{
 		"HOST":                      p.Host,
 		"SERVER_NAMES":              strings.TrimSpace(p.Host + " " + strings.Join(p.Aliases, " ")),
 		"APACHE_SERVER_ALIAS":       apacheServerAliasLine(p.Aliases),
@@ -349,7 +359,31 @@ func (a *apacheProvider) writeConfig(p WriteParams, siteFile string) error {
 		"SSL_KEY_FILE":              p.SSLKeyFile,
 		"PRODUCT_NAME":              version.ProductName,
 	}
-	vars["APACHE_SERVICE_CONFIG"] = render.Render(serviceTemplate, vars)
+}
+
+// renderServiceConfig renders just the service-level block (the
+// {{APACHE_SERVICE_CONFIG}} portion), without the VirtualHost wrapper.
+func (a *apacheProvider) renderServiceConfig(p WriteParams) (string, error) {
+	serviceTemplate, err := templates.Get("apache", p.SvcType+".conf")
+	if err != nil {
+		return "", err
+	}
+	return render.Render(serviceTemplate, a.baseVars(p)), nil
+}
+
+func (a *apacheProvider) writeConfig(p WriteParams, siteFile string) error {
+	httpTemplate, err := templates.Get("webserver/apache", "http.conf")
+	if err != nil {
+		return err
+	}
+	serviceConfig, err := a.renderServiceConfig(p)
+	if err != nil {
+		return err
+	}
+
+	vars := a.baseVars(p)
+	vars["APACHE_SERVICE_CONFIG"] = serviceConfig
+	vars["APACHE_CUSTOM_INCLUDE"] = apacheCustomInclude(p.CustomConfigBaseDir)
 	if p.SSLEnabled {
 		httpsTpl, err := templates.Get("webserver/apache", "https.conf")
 		if err != nil {

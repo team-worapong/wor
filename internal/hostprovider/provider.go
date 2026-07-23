@@ -36,6 +36,13 @@ type WriteParams struct {
 	PHPFPMEndpoint    string
 	DefaultPublicPath string
 	DocumentRoot      string // resolved absolute path to the service's document root
+	// CustomConfigBaseDir is the absolute path to the service's own
+	// ".wor" directory (WOR_HOME/domains/<domain>/<service>/.wor). When
+	// set, the generated vhost includes every *.conf a user drops into
+	// its <provider> subdirectory (.wor/nginx or .wor/apache), letting
+	// them extend the vhost without editing the regenerated file. Empty
+	// disables the include entirely (no directive emitted).
+	CustomConfigBaseDir string
 }
 
 // Provider is the interface every host (web server) provider implements.
@@ -54,6 +61,7 @@ type providerImpl interface {
 	hostFiles(host string) []string
 	hostExistsExtra(host, available, enabled string) bool
 	writeConfig(p WriteParams, siteFile string) error
+	renderServiceConfig(p WriteParams) (string, error) // service block only, no server/VirtualHost wrapper
 	enableHost(siteFile, enabledFile string) error
 	test() error
 	reload() error
@@ -137,6 +145,16 @@ func (p *Provider) Start() error { return p.impl.start() }
 
 func (p *Provider) WriteConfig(params WriteParams) error {
 	return p.impl.writeConfig(params, params.SiteFile)
+}
+
+// RenderServiceConfig renders only the service-level config block (the
+// {{NGINX_SERVICE_CONFIG}}/{{APACHE_SERVICE_CONFIG}} portion) for
+// params, without the surrounding server/VirtualHost wrapper. It is used
+// to write the non-loaded reference file (default.conf.example) into a
+// service's custom-config directory, so the reference always reflects
+// wor's current default for that exact service.
+func (p *Provider) RenderServiceConfig(params WriteParams) (string, error) {
+	return p.impl.renderServiceConfig(params)
 }
 
 // CleanupBrokenSymlinks removes dangling symlinks from sites-enabled

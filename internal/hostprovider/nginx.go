@@ -272,17 +272,28 @@ func nginxRedirectBlock(host string, aliases []string, preferred string) string 
 	return fmt.Sprintf("if ($host = %q) {\n        return 301 $scheme://%s$request_uri;\n    }", source, preferred)
 }
 
-func (n *nginxProvider) writeConfig(p WriteParams, siteFile string) error {
-	serviceTemplate, err := templates.Get("nginx", p.SvcType+".conf")
-	if err != nil {
-		return err
+// nginxCustomInclude returns the directive that pulls a service's
+// user-supplied *.conf snippets into its server block, or "" when no
+// custom-config base directory is set. The include lives in
+// <base>/nginx and uses a wildcard, which nginx tolerates even when the
+// directory is empty or missing -- so it is always safe to emit and
+// users can drop files in later without regenerating the vhost.
+func nginxCustomInclude(base string) string {
+	if base == "" {
+		return ""
 	}
-	httpTemplate, err := templates.Get("webserver/nginx", "http.conf")
-	if err != nil {
-		return err
-	}
+	dir := filepath.Join(base, "nginx")
+	return fmt.Sprintf("# Custom config (wor): drop *.conf files into %s\n    include %s;", dir, filepath.Join(dir, "*.conf"))
+}
 
-	vars := map[string]string{
+// baseVars builds the template variables shared by both the service
+// template (php.conf/static.conf/...) and the surrounding server-block
+// template (webserver/nginx/http.conf). Composite values that are
+// derived by rendering one template into another (NGINX_SERVICE_CONFIG,
+// NGINX_HTTPS_CONFIG, NGINX_CUSTOM_INCLUDE) are added by writeConfig, not
+// here, so this map is safe to reuse for a standalone service render.
+func (n *nginxProvider) baseVars(p WriteParams) map[string]string {
+	return map[string]string{
 		"HOST":                p.Host,
 		"SERVER_NAMES":        strings.TrimSpace(p.Host + " " + strings.Join(p.Aliases, " ")),
 		"NGINX_HOST_CHECK":    nginxHostCheckBlock(p.Host, p.Aliases),
@@ -296,6 +307,31 @@ func (n *nginxProvider) writeConfig(p WriteParams, siteFile string) error {
 		"PHP_FPM_ENDPOINT":    p.PHPFPMEndpoint,
 		"PRODUCT_NAME":        version.ProductName,
 	}
+}
+
+// renderServiceConfig renders just the service-level block (the
+// {{NGINX_SERVICE_CONFIG}} portion), without the server{} wrapper.
+func (n *nginxProvider) renderServiceConfig(p WriteParams) (string, error) {
+	serviceTemplate, err := templates.Get("nginx", p.SvcType+".conf")
+	if err != nil {
+		return "", err
+	}
+	return render.Render(serviceTemplate, n.baseVars(p)), nil
+}
+
+func (n *nginxProvider) writeConfig(p WriteParams, siteFile string) error {
+	httpTemplate, err := templates.Get("webserver/nginx", "http.conf")
+	if err != nil {
+		return err
+	}
+	serviceConfig, err := n.renderServiceConfig(p)
+	if err != nil {
+		return err
+	}
+
+	vars := n.baseVars(p)
+	vars["NGINX_SERVICE_CONFIG"] = serviceConfig
+	vars["NGINX_CUSTOM_INCLUDE"] = nginxCustomInclude(p.CustomConfigBaseDir)
 	if p.SSLEnabled {
 		httpsTpl, err := templates.Get("webserver/nginx", "https.conf")
 		if err != nil {
@@ -308,7 +344,6 @@ func (n *nginxProvider) writeConfig(p WriteParams, siteFile string) error {
 	} else {
 		vars["NGINX_HTTPS_CONFIG"] = ""
 	}
-	vars["NGINX_SERVICE_CONFIG"] = render.Render(serviceTemplate, vars)
 
 	out := render.Render(httpTemplate, vars)
 	return osutil.WriteFilePrivileged(siteFile, []byte(out))

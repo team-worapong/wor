@@ -29,8 +29,8 @@
 #
 # [output-name] is optional and overrides the archive *filenames* only
 # (not the folder name inside them -- see PKG_DIR below): e.g.
-# `./scripts/release.sh v1-b2` produces dist/release/v1-b2.zip and
-# dist/release/v1-b2.tar.gz instead of the default
+# `./scripts/release.sh v1-b2` produces dist/releases/v1-b2.zip and
+# dist/releases/v1-b2.tar.gz instead of the default
 # wor-runtime-manager-<version>.{zip,tar.gz}. This matters because
 # scripts/installer.sh's documented `curl ... | bash -s -- <version>`
 # flow downloads from a fixed URL template of exactly
@@ -40,12 +40,12 @@
 # requested (e.g. a v1.0.0 release must be uploaded as v1.0.0.tar.gz),
 # not this script's own default naming.
 #
-# Output: dist/release/<output-name-or-default>.{zip,tar.gz}, where the
+# Output: dist/releases/<output-name-or-default>.{zip,tar.gz}, where the
 # default is wor-runtime-manager-<version> and <version> comes from
 # internal/version/version.go (single source of truth for the version
 # string -- see that package's doc comment). Raw per-target binaries
 # (scripts/build.sh's own output) live under dist/bin/ -- kept separate
-# from dist/release/ so packaged archives never collide with the loose
+# from dist/releases/ so packaged archives never collide with the loose
 # binaries they're built from.
 #
 # Can be run from any directory; it resolves and cd's into the repo
@@ -93,8 +93,8 @@ if [ -z "$OUTPUT_NAME" ]; then
 fi
 ZIP_NAME="${OUTPUT_NAME}.zip"
 TARGZ_NAME="${OUTPUT_NAME}.tar.gz"
-ZIP_PATH="$ROOT_DIR/dist/release/$ZIP_NAME"
-TARGZ_PATH="$ROOT_DIR/dist/release/$TARGZ_NAME"
+ZIP_PATH="$ROOT_DIR/dist/releases/$ZIP_NAME"
+TARGZ_PATH="$ROOT_DIR/dist/releases/$TARGZ_NAME"
 
 # The folder name *inside* both archives is deliberately version-less
 # (wor-runtime-manager/, not wor-runtime-manager-1.0.0/) even though
@@ -128,19 +128,19 @@ chmod +x "$PKG_DIR"/bin/wor-linux-* "$PKG_DIR"/bin/wor-macos-*
 cp "$SCRIPT_DIR/install.sh" "$PKG_DIR/install.sh"
 chmod +x "$PKG_DIR/install.sh"
 
-# Wipe the whole dist/release/ directory rather than just rm -f'ing this
+# Wipe the whole dist/releases/ directory rather than just rm -f'ing this
 # version's own zip/tar.gz path. Staging above already happens in a
 # brand-new mktemp dir every run, so the *contents* of this run's
 # archives are never stale -- but leftover archives from older versions
 # (or a prior run of this script) sitting alongside the new ones in
-# dist/release/ is exactly the kind of thing that gets grabbed by
+# dist/releases/ is exactly the kind of thing that gets grabbed by
 # mistake ("why does the tar.gz I just downloaded still have the old
 # install.sh" is almost always someone opening an old file, not this
 # script producing one). Clearing the directory first means whatever's
-# in dist/release/ after this script finishes is only ever this run's
+# in dist/releases/ after this script finishes is only ever this run's
 # output.
-rm -rf "$ROOT_DIR/dist/release"
-mkdir -p "$ROOT_DIR/dist/release"
+rm -rf "$ROOT_DIR/dist/releases"
+mkdir -p "$ROOT_DIR/dist/releases"
 
 echo "==> Compressing (zip)"
 echo "    Output : $ZIP_PATH"
@@ -174,5 +174,5 @@ echo "    Output : $TARGZ_PATH"
 
 echo
 echo "[OK] Release packages ready:"
-echo "    dist/release/$ZIP_NAME"
-echo "    dist/release/$TARGZ_NAME"
+echo "    dist/releases/$ZIP_NAME"
+echo "    dist/releases/$TARGZ_NAME"
