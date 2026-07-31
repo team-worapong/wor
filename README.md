@@ -68,7 +68,7 @@ of version:
 
 ```bash
 curl -fsSL https://wor.worapong.com/download/releases/v1.0.0-b31.tar.gz -o wor.tar.gz
-tar -xzf wor.tar.gz          # or: unzip wor-host-<version>.zip
+tar -xzf wor.tar.gz          # or: unzip v1.0.0-b31.zip
 cd wor-host
 sudo ./install.sh
 ```

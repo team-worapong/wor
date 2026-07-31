@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strings"
 
 	"wor/internal/dbbackup"
@@ -27,6 +28,7 @@ func (a *App) cmdVersion() {
 	fmt.Fprintln(a.Out, ProductName)
 	fmt.Fprintln(a.Out, strings.Repeat("-", len(ProductName)))
 	fmt.Fprintf(a.Out, "Version  : %s\n", Version)
+	fmt.Fprintf(a.Out, "Commit   : %s\n", formatCommit())
 	fmt.Fprintf(a.Out, "OS       : %s\n", osutil.OSName())
 	if distro, ok := osutil.LinuxDistro(); ok {
 		fmt.Fprintf(a.Out, "Distro   : %s\n", distro)
@@ -42,6 +44,54 @@ func (a *App) cmdVersion() {
 	} else {
 		a.docFail("Workspace not initialized (run: wor setup)")
 	}
+}
+
+// buildRevision reads the git revision, commit time, and dirty flag
+// that the Go toolchain embeds automatically when wor is built from a
+// git work tree (go build -buildvcs, on by default since Go 1.18).
+// This is what tells two machines running the same Version number
+// apart when one was installed from a newer build than the other.
+// The values are absent when the binary was built outside a git tree
+// (e.g. with -buildvcs=false); callers then get ("", "", false) and
+// print "unknown" rather than a misleading blank.
+func buildRevision() (revision, commitTime string, modified bool) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "", "", false
+	}
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			revision = s.Value
+		case "vcs.time":
+			commitTime = s.Value
+		case "vcs.modified":
+			modified = s.Value == "true"
+		}
+	}
+	return revision, commitTime, modified
+}
+
+// formatCommit renders the embedded git revision as a short SHA plus
+// its commit time (with a "-dirty" marker when the tree had
+// uncommitted changes at build time), or "unknown" when no VCS info
+// was embedded.
+func formatCommit() string {
+	rev, ts, modified := buildRevision()
+	if rev == "" {
+		return "unknown"
+	}
+	short := rev
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	if modified {
+		short += "-dirty"
+	}
+	if ts != "" {
+		return fmt.Sprintf("%s (%s)", short, ts)
+	}
+	return short
 }
 
 func (a *App) cmdEnv(args []string) error {

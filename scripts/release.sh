@@ -7,9 +7,9 @@
 # bin/wor-<os>-<arch>[.exe] for every target plus install.sh, so a user
 # only has to:
 #
-#   unzip wor-runtime-manager-<version>.zip          # or:
-#   tar -xzf wor-runtime-manager-<version>.tar.gz
-#   cd wor-runtime-manager
+#   unzip v<version>-b<build>.zip          # or:
+#   tar -xzf v<version>-b<build>.tar.gz
+#   cd wor-host
 #   sudo ./install.sh
 #
 # Both formats are produced because .zip is the more universally
@@ -31,19 +31,20 @@
 # (not the folder name inside them -- see PKG_DIR below): e.g.
 # `./scripts/release.sh v1-b2` produces dist/releases/v1-b2.zip and
 # dist/releases/v1-b2.tar.gz instead of the default
-# wor-runtime-manager-<version>.{zip,tar.gz}. This matters because
+# v<version>-b<build>.{zip,tar.gz}. This matters because
 # scripts/installer.sh's documented `curl ... | bash -s -- <version>`
 # flow downloads from a fixed URL template of exactly
-# "<base-url>/<version>.tar.gz" -- there is no
-# "wor-runtime-manager-" prefix on the server side, so whatever gets
-# uploaded there has to be named to match the version tag being
-# requested (e.g. a v1.0.0 release must be uploaded as v1.0.0.tar.gz),
-# not this script's own default naming.
+# "<base-url>/<version>.tar.gz" -- the file
+# uploaded there just has to be named to match the tag requested. The
+# default computed here (v<version>-b<build>) already follows that tag
+# scheme (README.md shows v1.0.0-b31), so the override is only for the
+# rare case you need a filename that differs from it.
 #
 # Output: dist/releases/<output-name-or-default>.{zip,tar.gz}, where the
-# default is wor-runtime-manager-<version> and <version> comes from
+# default is v<version>-b<build> -- <version> comes from
 # internal/version/version.go (single source of truth for the version
-# string -- see that package's doc comment). Raw per-target binaries
+# string -- see that package's doc comment) and <build> is the running
+# commit count (git rev-list --count HEAD). Raw per-target binaries
 # (scripts/build.sh's own output) live under dist/bin/ -- kept separate
 # from dist/releases/ so packaged archives never collide with the loose
 # binaries they're built from.
@@ -84,12 +85,30 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
-echo "==> Building release matrix (version $VERSION)"
+# BUILD is the running commit count on the current branch
+# (git rev-list --count HEAD): a monotonic build number that increments
+# by one per commit, matching the v<version>-b<build> naming documented
+# in README.md and served from the download page (e.g. v1.0.0-b31 was
+# HEAD at 31 commits). It is derived from git at package time rather
+# than stored in a file so it can never drift out of sync with the
+# commit it was actually built from; a release must therefore be
+# packaged from inside the git work tree.
+if ! command -v git >/dev/null 2>&1; then
+  echo "ERROR: git is not installed or not on PATH (needed for the build number)." >&2
+  exit 1
+fi
+BUILD="$(git -C "$ROOT_DIR" rev-list --count HEAD 2>/dev/null)" || BUILD=""
+if [ -z "$BUILD" ]; then
+  echo "ERROR: could not determine build number ('git rev-list --count HEAD' failed -- is $ROOT_DIR a git work tree with at least one commit?)." >&2
+  exit 1
+fi
+
+echo "==> Building release matrix (version $VERSION, build $BUILD)"
 "$SCRIPT_DIR/build.sh" --release
 
-PKG_NAME="wor-runtime-manager"
+PKG_NAME="wor-host"
 if [ -z "$OUTPUT_NAME" ]; then
-  OUTPUT_NAME="${PKG_NAME}-${VERSION}"
+  OUTPUT_NAME="v${VERSION}-b${BUILD}"
 fi
 ZIP_NAME="${OUTPUT_NAME}.zip"
 TARGZ_NAME="${OUTPUT_NAME}.tar.gz"
@@ -97,9 +116,9 @@ ZIP_PATH="$ROOT_DIR/dist/releases/$ZIP_NAME"
 TARGZ_PATH="$ROOT_DIR/dist/releases/$TARGZ_NAME"
 
 # The folder name *inside* both archives is deliberately version-less
-# (wor-runtime-manager/, not wor-runtime-manager-1.0.0/) even though
-# the archive filenames themselves carry the version -- so "cd
-# wor-runtime-manager" in install instructions never has to change
+# (wor-host/, not wor-host-1.0.0/) even though
+# the archive filenames themselves carry the version and build -- so "cd
+# wor-host" in install instructions never has to change
 # between releases, only the filename the user downloads does.
 STAGE_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGE_DIR"' EXIT
