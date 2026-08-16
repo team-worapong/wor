@@ -1,0 +1,44 @@
+Add Windows code signing pipeline (SignPath Foundation)
+
+Windows 11 Smart App Control blocks the unsigned wor.exe before the
+process is created ("An Application Control policy has blocked this
+file"), which made the Windows target undistributable rather than merely
+rough. Nothing in wor's own code can work around it.
+
+Azure Artifact Signing was ruled out on geography (its Public Trust
+country list excludes Thailand, with no exception process and
+non-refundable billing from account creation) and EV certificates on
+value (Microsoft removed the SmartScreen bypass in 2024, and the June
+2023 CA/Browser Forum hardware-key rule now applies to OV too). SignPath
+Foundation is free for OSS and is what Microsoft's own guidance
+recommends; the certificate is issued to SignPath Foundation, so that is
+the publisher Windows shows. See docs/code-signing.md for the full
+reasoning and the manual setup steps.
+
+Build changes:
+
+- scripts/build.sh runs go-winres before the windows target, stamping
+  the version read from internal/version/version.go. Go emits no Win32
+  VERSIONINFO, so the .exe otherwise reports an empty ProductName and
+  ProductVersion and SignPath enforces both as a signing precondition. A
+  missing go-winres is a hard error rather than a warning, matching how
+  wor service add refuses a template whose runtime is absent.
+- scripts/release.sh gained --skip-build so a signing step can sit
+  between building and packaging. Without it release.sh would rebuild
+  the matrix and silently overwrite the signed binary with an unsigned
+  one, producing an archive that looks correct locally and is rejected
+  on the user's machine.
+- scripts/release.sh was committed as mode 100644 while the other three
+  scripts were 100755, so it failed with "Permission denied" on any
+  fresh clone. Only ever run from a working copy where the bit had been
+  set locally, so it went unnoticed until CI invoked it directly.
+
+Official releases now come from CI: SignPath Foundation only signs
+artifacts it can prove were built by a GitHub-hosted runner from this
+repository, verified against GitHub's own API rather than the build
+script's claims. Local build.sh/release.sh are unchanged for unsigned
+development builds.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01V5FUVoaR8fAvowsMMhLE6o
+
