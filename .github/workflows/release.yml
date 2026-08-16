@@ -1,0 +1,137 @@
+# .github/workflows/release.yml
+#
+# Builds the release matrix, has the Windows binary Authenticode-signed by
+# SignPath, then packages and publishes the release.
+#
+# Why signing has to happen here and not in scripts/release.sh: SignPath
+# Foundation only signs artifacts it can prove were produced by a
+# GitHub-hosted runner from this repository. It re-reads the workflow run
+# metadata from GitHub's own API rather than trusting anything the build
+# script claims, so a binary built on a laptop can never be signed. Local
+# scripts/build.sh and scripts/release.sh keep working exactly as before
+# for unsigned development and test builds; this workflow is the only path
+# that produces a signed official release.
+#
+# Prerequisites (see docs/code-signing.md for the full setup order):
+#   - SignPath Foundation application approved
+#   - repo secret    SIGNPATH_API_TOKEN
+#   - repo variable  SIGNPATH_ORGANIZATION_ID
+#   - a SignPath project and signing policy whose slugs match the values
+#     below, with .signpath/artifact-configurations/default.xml uploaded
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  # SignPath's connector service calls the GitHub API with this workflow's
+  # token to read the run metadata and download the unsigned artifact.
+  actions: read
+  # Needed by softprops/action-gh-release to create the GitHub Release.
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # scripts/release.sh derives the build number from
+          # `git rev-list --count HEAD`; the default shallow clone would
+          # produce a wrong (much smaller) number.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      # scripts/build.sh invokes go-winres for the windows target and
+      # hard-fails if it is missing, so it has to be on PATH before the
+      # build runs. GOPATH/bin is added explicitly rather than assumed.
+      - name: Install go-winres
+        run: |
+          go install github.com/tc-hib/go-winres@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # Read for the SignPath metadata check only -- scripts/build.sh reads
+      # the same file itself when it stamps the binary. internal/version/
+      # version.go stays the single source of truth either way.
+      - name: Read version
+        id: ver
+        run: |
+          VERSION="$(sed -nE 's/^const Number = "(.*)"$/\1/p' internal/version/version.go)"
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: could not read version from internal/version/version.go" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      # gofmt + go vet + go test + the 5-target cross-compile, including
+      # generating the Windows VERSIONINFO resource.
+      - name: Build release matrix
+        run: ./scripts/build.sh --release
+
+      - name: Stage the Windows binary for signing
+        run: |
+          mkdir -p sign-in
+          cp dist/bin/wor-windows-amd64.exe sign-in/
+
+      # actions/upload-artifact must be v4+: earlier versions do not expose
+      # the artifact-id output that the SignPath action needs.
+      - name: Upload unsigned Windows binary
+        id: unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: wor-windows-amd64-unsigned
+          path: sign-in/wor-windows-amd64.exe
+          if-no-files-found: error
+
+      # upload-artifact wraps the file in a ZIP, which is why the artifact
+      # configuration's root element is <zip-file>.
+      #
+      # The 600s default timeout is deliberately raised: SignPath
+      # Foundation requires a human to approve every release signing
+      # request, and ten minutes is not enough to notice the notification
+      # and act on it. Three hours leaves room without pinning a runner
+      # indefinitely.
+      - name: Submit signing request to SignPath
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: wor-host
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: default
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 10800
+          output-artifact-directory: sign-out
+          parameters: |
+            version: ${{ toJSON(steps.ver.outputs.version) }}
+
+      # Put the signed binary back where release.sh expects it. Only the
+      # Windows target carries a signature; the other four are untouched.
+      - name: Swap in the signed Windows binary
+        run: |
+          test -f sign-out/wor-windows-amd64.exe
+          cp sign-out/wor-windows-amd64.exe dist/bin/wor-windows-amd64.exe
+
+      # --skip-build packages the dist/bin above, signature included,
+      # instead of rebuilding it and discarding the signature. Packaging
+      # logic itself stays in scripts/release.sh so there is exactly one
+      # definition of what a release archive contains.
+      - name: Package release archives
+        run: ./scripts/release.sh --skip-build
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/releases/*
+          fail_on_unmatched_files: true

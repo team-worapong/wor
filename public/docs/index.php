@@ -556,6 +556,7 @@ wor health" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
                 <span class="text-body-secondary small">
                     <a href="/" class="link-secondary me-3">Home</a>
                     <a href="/download/" class="link-secondary me-3">Downloads</a>
+                    <a href="/code-signing/" class="link-secondary me-3">Code signing policy</a>
                     <a href="https://paypal.me/TeamWorapong" target="_blank" rel="noopener" class="link-secondary"><i class="bi bi-heart-fill me-1"></i>Donate</a>
                 </span>
             </div>

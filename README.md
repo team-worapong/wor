@@ -42,6 +42,35 @@ GOOS=windows GOARCH=amd64 go build -o dist/bin/wor-windows-amd64.exe ./cmd/wor
 
 (`scripts/build.sh --release` does this for you and also packages a distributable zip via `scripts/release.sh` -- raw binaries land in `dist/bin/`, packaged zips in `dist/release/`.)
 
+Building the **windows** target additionally requires
+[`go-winres`](https://github.com/tc-hib/go-winres), which embeds the
+Windows version resource (Go emits none by default, and a release binary
+without one cannot be code-signed):
+
+```bash
+go install github.com/tc-hib/go-winres@latest
+```
+
+`scripts/build.sh` calls it automatically for the windows target and
+fails with instructions if it is missing. The linux and macOS targets do
+not need it. See `docs/code-signing.md`.
+
+## Windows: unsigned builds are blocked by Smart App Control
+
+Windows 11's Smart App Control refuses to start unsigned executables:
+
+```
+Program 'wor.exe' failed to run: An Application Control policy has blocked this file
+```
+
+This is Windows blocking the file before the process starts, not a bug in
+wor. Signed official releases are being set up (see
+`docs/code-signing.md`); until the first signed release ships, running
+`wor` on a machine with Smart App Control enabled requires turning that
+feature off, which cannot be undone without resetting Windows. Running it
+in a VM, or on a machine where Smart App Control is already off, avoids
+that trade-off.
+
 ## Install on a server
 
 Browse all downloadable files and release versions at:

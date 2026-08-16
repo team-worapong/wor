@@ -25,7 +25,18 @@
 # together with scripts/install.sh.
 #
 # Usage:
-#   ./scripts/release.sh [output-name]
+#   ./scripts/release.sh [output-name] [--skip-build]
+#
+# --skip-build packages whatever is already in dist/bin instead of
+# rebuilding it. It exists so a step can be inserted between building and
+# packaging -- specifically Authenticode-signing the Windows binary, which
+# happens off this machine (see .github/workflows/release.yml). Without
+# it, release.sh would rebuild the matrix and silently overwrite the
+# signed wor-windows-amd64.exe with an unsigned one, producing an archive
+# that looks fine and is rejected by Smart App Control on the user's
+# machine. The "expected build output missing" check below still applies,
+# so passing --skip-build with an empty dist/bin fails loudly rather than
+# packaging nothing.
 #
 # [output-name] is optional and overrides the archive *filenames* only
 # (not the folder name inside them -- see PKG_DIR below): e.g.
@@ -65,12 +76,30 @@ for tool in zip tar; do
   fi
 done
 
-if [ "$#" -gt 1 ]; then
-  echo "ERROR: too many arguments (usage: ./scripts/release.sh [output-name])" >&2
-  exit 1
-fi
+OUTPUT_NAME=""
+SKIP_BUILD=0
 
-OUTPUT_NAME="${1:-}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --skip-build)
+      SKIP_BUILD=1
+      ;;
+    --*)
+      echo "ERROR: unknown option: $1" >&2
+      echo "(usage: ./scripts/release.sh [output-name] [--skip-build])" >&2
+      exit 1
+      ;;
+    *)
+      if [ -n "$OUTPUT_NAME" ]; then
+        echo "ERROR: too many arguments (usage: ./scripts/release.sh [output-name] [--skip-build])" >&2
+        exit 1
+      fi
+      OUTPUT_NAME="$1"
+      ;;
+  esac
+  shift
+done
+
 case "$OUTPUT_NAME" in
   */*)
     echo "ERROR: output-name must not contain '/': $OUTPUT_NAME" >&2
@@ -103,8 +132,13 @@ if [ -z "$BUILD" ]; then
   exit 1
 fi
 
-echo "==> Building release matrix (version $VERSION, build $BUILD)"
-"$SCRIPT_DIR/build.sh" --release
+if [ "$SKIP_BUILD" -eq 1 ]; then
+  echo "==> Skipping build (--skip-build): packaging the existing dist/bin"
+  echo "    (version $VERSION, build $BUILD)"
+else
+  echo "==> Building release matrix (version $VERSION, build $BUILD)"
+  "$SCRIPT_DIR/build.sh" --release
+fi
 
 PKG_NAME="wor-host"
 if [ -z "$OUTPUT_NAME" ]; then

@@ -566,6 +566,7 @@ Suggested fix (run yourself -- wor diagnose never changes anything)
                 <span class="text-body-secondary small">
                     <a href="/download/" class="link-secondary me-3">Downloads</a>
                     <a href="/docs/" class="link-secondary me-3">Docs</a>
+                    <a href="/code-signing/" class="link-secondary me-3">Code signing policy</a>
                     <a href="https://paypal.me/TeamWorapong" target="_blank" rel="noopener" class="link-secondary"><i class="bi bi-heart-fill me-1"></i>Donate</a>
                 </span>
             </div>

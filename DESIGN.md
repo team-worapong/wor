@@ -511,6 +511,75 @@ it (`nginxCustomInclude`/`apacheCustomInclude`) and expose
 and refresh the reference file. A failure scaffolding never blocks writing
 the vhost, since the include tolerates a missing directory.
 
+## 18. Windows code signing, and a signed release pipeline
+
+Found on a real Windows 11 machine (2026-08-16): `wor version` failed with
+`Program 'wor.exe' failed to run: An Application Control policy has
+blocked this file`. This is Windows' Code Integrity layer -- Smart App
+Control -- refusing to create the process at all, because the binary is
+unsigned. It is not reachable from wor's own code: nothing in this repo
+can make an unsigned binary run on such a machine. Practically, this made
+the Windows target undistributable rather than merely rough.
+
+Full reasoning, the alternatives evaluated, and the manual setup steps
+live in `docs/code-signing.md`. The short version of the decisions:
+
+- **Azure Artifact Signing (ex-Trusted Signing) was ruled out on
+  geography, not price.** Its Public Trust certificates are restricted to
+  a published list of countries that does not include Thailand, with no
+  exception process, and billing starts (non-refundable, non-pro-rated) at
+  account creation regardless of whether identity validation later
+  succeeds.
+- **EV certificates were ruled out on value.** Microsoft's current
+  documentation states EV stopped bypassing SmartScreen in 2024 and that
+  paying the premium for that reason is no longer justified; since the
+  June 2023 CA/Browser Forum hardware-key rule applies to OV as well, the
+  two tiers are now operationally near-identical.
+- **SignPath Foundation was chosen**: free for OSS, recommended by
+  Microsoft's own code signing guidance, and wor-host meets its criteria.
+  The certificate is issued to SignPath Foundation, so that -- not the
+  maintainer's name -- is the publisher Windows displays. Accepted
+  deliberately: it also means inheriting an established publisher identity
+  instead of starting from zero reputation.
+
+Three consequences for the build, all deliberate:
+
+1. **`go build` alone can no longer produce a releasable Windows
+   binary.** Go emits no Win32 VERSIONINFO resource, so the `.exe` reports
+   an empty ProductName/ProductVersion, and SignPath enforces both as a
+   signing precondition. `scripts/build.sh` now runs `go-winres` before
+   the windows target (`make_windows_resource`), stamping the version read
+   from `internal/version/version.go` -- the same single source of truth
+   `scripts/release.sh` already reads for archive names, so the resource
+   can never disagree with what `wor version` prints. A missing
+   `go-winres` is a **hard error**, not a warning, following the same rule
+   as `wor service add` refusing a template whose runtime is absent: a
+   build that silently produced an unsignable binary would only fail much
+   later, in CI, after a human had already approved the signing request.
+   The generated `*.syso` is build output and is gitignored.
+2. **`scripts/release.sh` gained `--skip-build`.** Signing happens between
+   building and packaging, and it happens off this machine. Without the
+   flag, release.sh would rebuild the matrix and silently overwrite the
+   signed `.exe` with an unsigned one, producing an archive that looks
+   correct locally and is rejected on the user's machine. Packaging logic
+   deliberately stays in release.sh so there is still exactly one
+   definition of what a release archive contains.
+3. **Official releases now come from CI, not a laptop.** SignPath
+   Foundation only signs artifacts it can prove were built by a
+   GitHub-hosted runner from this repository, which it verifies by reading
+   the workflow run metadata from GitHub's own API rather than trusting
+   anything the build script asserts. A locally built binary therefore can
+   never be signed, by design. `scripts/build.sh` and `scripts/release.sh`
+   are unchanged for local/unsigned use; `.github/workflows/release.yml`
+   is the only path that produces a signed release.
+
+Also fixed in passing: `scripts/release.sh` was committed with mode
+`100644` while the other three scripts were `100755`, so `./scripts/
+release.sh` failed with "Permission denied" on any fresh clone. It was
+only ever run from a working copy where the bit had been set locally, so
+nobody noticed. The CI workflow invokes it directly, which is what
+surfaced it.
+
 ## Known gaps / still to verify
 
 - **Partially built/run for real**: during the initial port, the sandbox
@@ -544,3 +613,17 @@ the vhost, since the include tolerates a missing directory.
   `.conf`/unix user left behind; they do not self-heal and must be
   removed+added again manually. There is no lightweight "repair an
   existing pool in place" command yet.
+- **Code signing is wired up but not yet live** (section 18). The
+  SignPath Foundation application, the SignPath-side project/policy/token
+  setup, and the first signed release have not happened yet, so
+  `.github/workflows/release.yml` has never run end to end -- the build,
+  resource-generation and packaging steps have been tested, the signing
+  step has not. Until a signed release ships, every published `wor.exe`
+  is still blocked by Smart App Control.
+- **Only the Windows binary gets signed.** The Linux and macOS binaries
+  are unsigned, and macOS notarization (a separate paid Apple process) is
+  not addressed at all -- expect Gatekeeper warnings there.
+- A signature is not instant reputation: SmartScreen builds reputation
+  per file hash over download volume, and there are 2026 reports of
+  correctly signed binaries still being blocked by Smart App Control for
+  weeks. Signing is necessary, not provably sufficient.

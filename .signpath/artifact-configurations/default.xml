@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration for wor-host.
+
+  Root element is <zip-file> because actions/upload-artifact wraps whatever
+  it uploads in a ZIP archive. Inside that ZIP there is exactly one file:
+  the Windows binary.
+
+  product-name and product-version are declared as restrictions, not just
+  labels. SignPath verifies the PE file's embedded VERSIONINFO matches these
+  values and refuses to sign if it does not. That is what makes the
+  go-winres step in .github/workflows/release.yml mandatory rather than
+  cosmetic: a plain `go build` .exe carries no VERSIONINFO at all and would
+  be rejected here.
+
+  ${version} is supplied by the workflow's `parameters:` input, read from
+  internal/version/version.go, so this file never has to be edited when the
+  version changes.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+
+  <zip-file>
+    <pe-file path="wor-windows-amd64.exe"
+             product-name="WOR Host"
+             product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+
+</artifact-configuration>

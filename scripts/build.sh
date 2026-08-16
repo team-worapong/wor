@@ -67,9 +67,69 @@ checking() {
   echo "==> Checking"
   gofmt -l .
   go vet ./...
-  
+
   echo "==> Running tests"
   go test ./...
+}
+
+# read_version reads the release version string from
+# internal/version/version.go, the single source of truth for it (see
+# that package's doc comment). scripts/release.sh reads the same file
+# with the same expression to name its archives; this copy exists so a
+# plain `scripts/build.sh windows` produces a correctly stamped binary
+# without having to go through release.sh.
+read_version() {
+  local version_file="$ROOT_DIR/internal/version/version.go"
+  local version
+  version="$(sed -nE 's/^const Number = "(.*)"$/\1/p' "$version_file")"
+  if [ -z "$version" ]; then
+    echo "ERROR: could not read version from $version_file" >&2
+    exit 1
+  fi
+  echo "$version"
+}
+
+# make_windows_resource compiles winres/winres.json into
+# cmd/wor/rsrc_windows_<arch>.syso, which `go build` links in
+# automatically -- and only for that GOOS/GOARCH, because of the
+# filename suffix, so the linux/macos targets are untouched.
+#
+# This is not cosmetic polish. Go emits no Win32 VERSIONINFO resource of
+# its own, so without this step wor.exe reports an empty ProductName and
+# ProductVersion, and SignPath (which enforces both as a signing
+# precondition -- see .signpath/artifact-configurations/default.xml)
+# refuses to sign it. The version stamped here therefore has to stay
+# equal to internal/version/version.go, which is why it is read from
+# there rather than passed in.
+#
+# A missing go-winres is a hard error rather than a warning, matching how
+# wor itself blocks `service add` when a template's runtime is absent: a
+# build that quietly produced an unsignable binary would only fail much
+# later, in CI, after a human already approved the signing request.
+make_windows_resource() {
+  local goarch_value="$1"
+  local version
+
+  if ! command -v go-winres >/dev/null 2>&1; then
+    echo "ERROR: go-winres is not installed or not on PATH." >&2
+    echo "It is required to build the windows target, because Go does not emit a" >&2
+    echo "VERSIONINFO resource by itself and releases must carry one to be signed." >&2
+    echo "Install it with:" >&2
+    echo "    go install github.com/tc-hib/go-winres@latest" >&2
+    echo "(then make sure \$(go env GOPATH)/bin is on your PATH)" >&2
+    exit 1
+  fi
+
+  version="$(read_version)"
+
+  echo "==> Generating Windows resource"
+  echo "    Version: $version"
+  go-winres make \
+    --in "$ROOT_DIR/winres/winres.json" \
+    --arch "$goarch_value" \
+    --product-version "$version" \
+    --file-version "$version.0" \
+    --out "$ROOT_DIR/cmd/wor/rsrc"
 }
 
 # build_one GOOS_VALUE OS_LABEL GOARCH_VALUE
@@ -80,6 +140,10 @@ build_one() {
     bin_name="${bin_name}.exe"
   fi
   local out_path="$ROOT_DIR/dist/bin/$bin_name"
+
+  if [ "$goos_value" = "windows" ]; then
+    make_windows_resource "$goarch_value"
+  fi
 
   echo "==> Building"
   echo "    Target : $goos_value/$goarch_value"
