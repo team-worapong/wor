@@ -15,9 +15,20 @@ function humanSize(int $bytes): string {
 function fileKind(string $name): array {
     // [icon, badge label, badge class]
     if (str_ends_with($name, '.tar.gz') || str_ends_with($name, '.tgz')) return ['bi-file-zip', 'tar.gz', 'text-bg-primary'];
-    if (str_ends_with($name, '.zip'))  return ['bi-file-zip', 'zip', 'text-bg-info'];
-    if (str_ends_with($name, '.sh'))   return ['bi-terminal', 'script', 'text-bg-success'];
+    if (str_ends_with($name, '.zip'))    return ['bi-file-zip', 'zip', 'text-bg-info'];
+    if (str_ends_with($name, '.sha256')) return ['bi-shield-check', 'checksum', 'text-bg-secondary'];
+    if (str_ends_with($name, '.sh'))     return ['bi-terminal', 'script', 'text-bg-success'];
     return ['bi-file-earmark', 'file', 'text-bg-secondary'];
+}
+
+// Order of the files listed inside one version's card. scandir() returns
+// names alphabetically, which would put the checksum above the archives it
+// describes; this puts what people actually came to download first.
+const EXT_ORDER = ['tar.gz', 'tgz', 'zip', 'sha256'];
+
+function extRank(string $ext): int {
+    $i = array_search($ext, EXT_ORDER, true);
+    return $i === false ? count(EXT_ORDER) : $i;
 }
 
 // Sortable key for version tags: v1.0.0-b32 -> [1,0,0,32]; final releases outrank betas.
@@ -37,13 +48,17 @@ if (is_dir($releasesDir)) {
         $entry = ['file' => $f, 'size' => filesize($path), 'mtime' => filemtime($path)];
         if ($f === 'latest.tar.gz') {
             $latest = $entry;
-        } elseif (preg_match('/^(v\d+\.\d+\.\d+(?:-?[A-Za-z0-9.]+)?)\.(tar\.gz|zip|tgz)$/', $f, $m)) {
+        } elseif (preg_match('/^(v\d+\.\d+\.\d+(?:-?[A-Za-z0-9.]+)?)\.(tar\.gz|zip|tgz|sha256)$/', $f, $m)) {
             $versions[$m[1]][] = $entry + ['ext' => $m[2]];
         } else {
             $others[] = $entry;
         }
     }
     uksort($versions, fn($a, $b) => versionKey($b) <=> versionKey($a)); // newest first
+    foreach ($versions as &$files) {
+        usort($files, fn($a, $b) => extRank($a['ext']) <=> extRank($b['ext']));
+    }
+    unset($files); // break the reference so a later write to $files cannot alias the last group
 }
 $latestTag = array_key_first($versions);
 ?>
