@@ -78,17 +78,18 @@ func (a *App) errf(format string, args ...interface{}) error {
 // Run dispatches argv (excluding argv[0]) to the matching subcommand,
 // mirroring bin/wor dispatch_command(). It returns a process exit code.
 func (a *App) Run(args []string) int {
-	if osutil.IsSudoElevated() {
-		fmt.Fprintln(a.Err, "ERROR: do not run wor via sudo (e.g. `sudo wor host add ...`).")
-		fmt.Fprintln(a.Err, "Run it as your normal user instead -- wor will ask for elevated (sudo)")
-		fmt.Fprintln(a.Err, "permission itself, only for the specific actions that actually need it.")
-		return 1
-	}
 	if len(args) == 0 {
 		a.usage()
 		return 1
 	}
 	cmd, rest := args[0], args[1:]
+
+	if osutil.IsSudoElevated() && !allowsSudoElevation(cmd, rest) {
+		fmt.Fprintln(a.Err, "ERROR: do not run wor via sudo (e.g. `sudo wor host add ...`).")
+		fmt.Fprintln(a.Err, "Run it as your normal user instead -- wor will ask for elevated (sudo)")
+		fmt.Fprintln(a.Err, "permission itself, only for the specific actions that actually need it.")
+		return 1
+	}
 
 	if requiresInitializedWorkspace(cmd) && !a.workspaceInitialized() {
 		fmt.Fprintln(a.Err, "ERROR: workspace not initialized.")
@@ -173,6 +174,26 @@ func (a *App) Run(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// allowsSudoElevation decides whether cmd/rest may run under `sudo`,
+// which Run otherwise refuses outright (see DESIGN.md section 4).
+//
+// Exactly one command is exempt: `wor ssl sync`. It is registered as
+// certbot's renewal deploy hook, and certbot runs hooks as root. When
+// renewal comes from a timer there is no SUDO_USER set and the refusal
+// never triggers -- but a hand-typed `sudo certbot renew` does set it,
+// so without this the hook would fail for that operator and not the
+// next, which is close to undiagnosable.
+//
+// The exemption is safe because it does not weaken what section 4
+// actually protects against: root-owned artifacts left in WOR_HOME.
+// `ssl sync` writes exactly two files and chowns both to the operator
+// (see App.certificateOwner), so it upholds that rule rather than
+// escaping it. Nothing else belongs on this list -- it is not a general
+// "run wor as root" mode.
+func allowsSudoElevation(cmd string, rest []string) bool {
+	return cmd == "ssl" && len(rest) > 0 && rest[0] == "sync"
 }
 
 // commandNeedsLock decides whether Run should hold the $WOR_HOME

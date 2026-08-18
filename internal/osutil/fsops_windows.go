@@ -27,6 +27,22 @@ func writeFilePrivilegedFallback(path string, data []byte) error {
 	return errors.New("file not writable; " + ElevationHint())
 }
 
+func readFilePrivilegedFallback(path string) ([]byte, error) {
+	return nil, errors.New("file not readable; " + ElevationHint())
+}
+
+// FileOwner has no POSIX uid/gid equivalent on Windows, which uses
+// ACLs. It reports an error rather than a made-up answer; every caller
+// is part of the Let's Encrypt certificate flow, which is Unix-only
+// anyway (DESIGN.md section 5).
+func FileOwner(path string) (uid, gid int, err error) {
+	return 0, 0, errors.New("file ownership is not available on Windows")
+}
+
+// Chown is a no-op on Windows, for the same reason as ClaimOwnership
+// below: there is no uid/gid to set.
+func Chown(_ string, _, _ int) error { return nil }
+
 func removeFilePrivilegedFallback(path string) error {
 	if err := os.Remove(path); err == nil {
 		return nil

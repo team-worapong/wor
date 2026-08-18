@@ -14,6 +14,7 @@ import (
 	"wor/internal/osutil"
 	"wor/internal/phpfpm"
 	"wor/internal/pm2"
+	"wor/internal/ssl"
 	"wor/internal/systemd"
 )
 
@@ -231,6 +232,9 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 		// entirely rather than printing something misleading.
 		a.docOK("Permission checks skipped (Windows uses a different access-control model)")
 	} else {
+		a.checkWorHomeOwnership()
+		a.checkCertificateRenewalSchedule()
+
 		if loose := scanLooseEnvFiles(a.Cfg.WorHome); len(loose) > 0 {
 			a.docWarn(".env file(s) readable beyond their own owner -- %d found:", len(loose))
 			for _, p := range loose {
@@ -461,4 +465,114 @@ func (a *App) cmdReset(args []string) error {
 	}
 	a.ok("WOR reset completed")
 	return nil
+}
+
+// checkWorHomeOwnership warns when WOR_HOME is owned by root.
+//
+// wor derives the owner for the certificate files it copies from this
+// directory (see App.certificateOwner), so a root-owned WOR_HOME makes
+// `wor ssl sync` refuse rather than hand a private key to root. That
+// refusal would otherwise first surface inside certbot's renewal hook
+// in the middle of the night; reporting it here means it is visible
+// while somebody is actually looking.
+//
+// It is not a hypothetical state: osutil.ClaimOwnership exists because
+// WOR_HOME has been found root-owned in the field, left behind by an
+// older install.
+func (a *App) checkWorHomeOwnership() {
+	if !dirExists(a.Cfg.WorHome) {
+		return
+	}
+	uid, _, err := osutil.FileOwner(a.Cfg.WorHome)
+	if err != nil {
+		return
+	}
+	if uid != 0 {
+		return
+	}
+	// Root-owned and run by root is a supported setup (a server with no
+	// other account), not a problem -- see App.certificateOwner.
+	if os.Geteuid() == 0 {
+		return
+	}
+	a.docWarn("WOR_HOME (%s) is owned by root, but you are not", a.Cfg.WorHome)
+	a.info("Certificate sync cannot run while it is. Fix: sudo chown -R $(id -un) %s", a.Cfg.WorHome)
+}
+
+// checkCertificateRenewalSchedule warns when Let's Encrypt certificates
+// exist but nothing on the machine is scheduled to renew them.
+//
+// Debian's certbot package installs a systemd timer; Homebrew's formula
+// installs no equivalent, and on the machine this was first found on
+// there was neither a timer nor a root crontab -- so the certificates
+// were simply going to expire, and the deploy hook that refreshes wor's
+// copy would never have fired either. Nothing reports that on its own,
+// which is exactly why it belongs in doctor.
+//
+// Warning only, and deliberately not offered as an auto-fix: what the
+// right schedule looks like differs per platform and per operator, and
+// installing a root-level timer unprompted is not something a read-only
+// health check should do.
+func (a *App) checkCertificateRenewalSchedule() {
+	hosts := a.letsEncryptHosts()
+	if len(hosts) == 0 {
+		return
+	}
+	if certbotRenewalScheduled() {
+		a.docOK("Certificate renewal is scheduled (%d Let's Encrypt host(s))", len(hosts))
+		return
+	}
+	a.docWarn("%d Let's Encrypt host(s) but no renewal schedule found on this machine", len(hosts))
+	a.info("Nothing will renew them, and they expire in 90 days. Check with: sudo certbot renew --dry-run")
+	a.info("Then schedule `certbot renew` (a systemd timer on Linux, a launchd job or cron entry on macOS).")
+}
+
+// letsEncryptHosts lists the registered hosts whose recorded certificate
+// came from Let's Encrypt.
+func (a *App) letsEncryptHosts() []string {
+	refs, err := a.Store.ListAllServices()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, ref := range refs {
+		for _, host := range ref.Service.Hosts {
+			if st, ok, _ := ssl.LoadState(a.Cfg.SSL, host); ok && st.Provider == "letsencrypt" {
+				out = append(out, host)
+			}
+		}
+	}
+	return out
+}
+
+// certbotRenewalScheduled reports whether anything on this machine is
+// set up to run `certbot renew`. Best effort by design: it checks the
+// places certbot's own packaging uses, and a false negative costs only
+// a warning telling the operator to look, never a failed command.
+func certbotRenewalScheduled() bool {
+	// Debian/RHEL packaging: a systemd timer, or a drop-in under cron.
+	for _, p := range []string{
+		"/etc/systemd/system/timers.target.wants/certbot.timer",
+		"/lib/systemd/system/certbot.timer",
+		"/usr/lib/systemd/system/certbot.timer",
+		"/etc/cron.d/certbot",
+		"/etc/cron.daily/certbot",
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	// macOS: a launchd job, wherever it was installed from.
+	for _, dir := range []string{"/Library/LaunchDaemons", "/Library/LaunchAgents"} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if strings.Contains(strings.ToLower(e.Name()), "certbot") {
+				return true
+			}
+		}
+	}
+	return false
 }

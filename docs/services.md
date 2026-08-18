@@ -92,8 +92,16 @@ service's own custom-config directory:
     WOR_HOME/domains/<domain>/<service>/.wor/<nginx|apache>/*.conf
 
 - nginx snippets are included inside the service's `server { }` block;
-  apache snippets inside its `<VirtualHost>` (both :80 and :443) -- in
-  both cases right after wor's own generated directives.
+  apache snippets inside its `<VirtualHost>` -- in both cases right after
+  wor's own generated directives.
+- **Which block they land in depends on the HTTPS redirect.** nginx now
+  generates a `:80` and a `:443` server block, matching apache's two
+  VirtualHosts. With the redirect off, both blocks serve and the snippets
+  are included in both. With the redirect on, the `:80` block does
+  nothing but answer ACME challenges and redirect, so the snippets are
+  included in the `:443` block only -- a snippet in a redirect-only block
+  could never run. Set the redirect with
+  `wor ssl redirect <host> on|off`.
 - The include is always present in the generated vhost and uses a
   wildcard (`include`/`IncludeOptional`), so an empty or missing
   directory is never an error: drop a file in any time and run
@@ -107,3 +115,22 @@ service's own custom-config directory:
   plus these rules. It does not end in `.conf`, so it is never loaded,
   and wor regenerates it on each host write -- do not edit it in place;
   copy it to a new `*.conf` file to build on it.
+
+TLS certificate files
+
+Whatever the SSL provider, the generated vhost points at wor's own copy:
+
+    WOR_HOME/ssl/hosts/<host>/fullchain.pem
+    WOR_HOME/ssl/hosts/<host>/privkey.pem
+
+mode 0600, owned by whoever owns WOR_HOME. This is what lets one
+ownership model work on both platforms without any ACL: the web server's
+master process is what reads a certificate, and that is root on Linux
+and the login user (the operator) on macOS.
+
+Let's Encrypt certificates are copied here from certbot's store rather
+than referenced in place, because /etc/letsencrypt/archive is root-only
+and an unprivileged master -- Homebrew's nginx on macOS -- cannot read
+it at all. `wor ssl sync <host>` refreshes the copy and runs
+automatically as certbot's deploy hook. See docs/commands.md and
+DESIGN.md section 21.

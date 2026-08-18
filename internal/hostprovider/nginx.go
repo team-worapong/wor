@@ -272,6 +272,34 @@ func nginxRedirectBlock(host string, aliases []string, preferred string) string 
 	return fmt.Sprintf("if ($host = %q) {\n        return 301 $scheme://%s$request_uri;\n    }", source, preferred)
 }
 
+// nginxACMELocation returns the location block that serves certbot's
+// webroot challenges, or "" when no webroot is configured. It is a
+// location rather than anything server-level so that nginx's
+// longest-prefix rule keeps it ahead of both "location /" and the
+// ForceHTTPS redirect.
+func nginxACMELocation(webroot string) string {
+	if webroot == "" {
+		return ""
+	}
+	return fmt.Sprintf("location /.well-known/acme-challenge/ {\n        root %s;\n        default_type \"text/plain\";\n    }", webroot)
+}
+
+// httpsRedirectTarget picks the host a plain-HTTP request is sent to
+// when ForceHTTPS is on. A configured canonical host does both jobs in
+// one hop (scheme and name); with no canonical host, the requested name
+// is preserved and only the scheme changes -- redirecting an alias to
+// the primary name is a decision the operator has not made.
+//
+// Shared by both providers so nginx and apache answer identically;
+// nginxVar/apacheVar carry each server's own "the requested host"
+// variable.
+func httpsRedirectTarget(preferred, requestedHostVar string) string {
+	if preferred != "" {
+		return preferred
+	}
+	return requestedHostVar
+}
+
 // nginxCustomInclude returns the directive that pulls a service's
 // user-supplied *.conf snippets into its server block, or "" when no
 // custom-config base directory is set. The include lives in
@@ -298,6 +326,8 @@ func (n *nginxProvider) baseVars(p WriteParams) map[string]string {
 		"SERVER_NAMES":        strings.TrimSpace(p.Host + " " + strings.Join(p.Aliases, " ")),
 		"NGINX_HOST_CHECK":    nginxHostCheckBlock(p.Host, p.Aliases),
 		"NGINX_REDIRECT":      nginxRedirectBlock(p.Host, p.Aliases, p.Preferred),
+		"NGINX_ACME_LOCATION": nginxACMELocation(p.ACMEWebroot),
+		"NGINX_HTTPS_TARGET":  httpsRedirectTarget(p.Preferred, "$host"),
 		"DOMAIN":              p.Domain,
 		"SERVICE":             p.Service,
 		"PORT":                portString(p.Port),
@@ -319,11 +349,19 @@ func (n *nginxProvider) renderServiceConfig(p WriteParams) (string, error) {
 	return render.Render(serviceTemplate, n.baseVars(p)), nil
 }
 
+// writeConfig renders one or two server blocks, matching apache's
+// shape (see DESIGN.md and docs/ssl-redesign.md):
+//
+//   - no certificate: a single :80 block that serves the site.
+//   - certificate, ForceHTTPS off: a :80 block and a :443 block, both
+//     serving.
+//   - certificate, ForceHTTPS on: a :80 block that does nothing but
+//     answer ACME challenges and redirect, plus a :443 block that
+//     serves.
+//
+// The per-service custom include follows the serving block(s) for the
+// same reason: a snippet in a redirect-only block could never run.
 func (n *nginxProvider) writeConfig(p WriteParams, siteFile string) error {
-	httpTemplate, err := templates.Get("webserver/nginx", "http.conf")
-	if err != nil {
-		return err
-	}
 	serviceConfig, err := n.renderServiceConfig(p)
 	if err != nil {
 		return err
@@ -332,20 +370,27 @@ func (n *nginxProvider) writeConfig(p WriteParams, siteFile string) error {
 	vars := n.baseVars(p)
 	vars["NGINX_SERVICE_CONFIG"] = serviceConfig
 	vars["NGINX_CUSTOM_INCLUDE"] = nginxCustomInclude(p.CustomConfigBaseDir)
+	vars["SSL_CERT_FILE"] = p.SSLCertFile
+	vars["SSL_KEY_FILE"] = p.SSLKeyFile
+
+	httpName := "http.conf"
+	if p.SSLEnabled && p.ForceHTTPS {
+		httpName = "http_redirect.conf"
+	}
+	httpTemplate, err := templates.Get("webserver/nginx", httpName)
+	if err != nil {
+		return err
+	}
+	out := render.Render(httpTemplate, vars)
+
 	if p.SSLEnabled {
 		httpsTpl, err := templates.Get("webserver/nginx", "https.conf")
 		if err != nil {
 			return err
 		}
-		vars["NGINX_HTTPS_CONFIG"] = render.Render(httpsTpl, map[string]string{
-			"SSL_CERT_FILE": p.SSLCertFile,
-			"SSL_KEY_FILE":  p.SSLKeyFile,
-		})
-	} else {
-		vars["NGINX_HTTPS_CONFIG"] = ""
+		out += "\n" + render.Render(httpsTpl, vars)
 	}
 
-	out := render.Render(httpTemplate, vars)
 	return osutil.WriteFilePrivileged(siteFile, []byte(out))
 }
 

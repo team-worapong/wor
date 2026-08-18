@@ -304,7 +304,7 @@ if (is_dir($releasesDir)) {
                                 <div class="card-body">
                                     <div class="feature-icon mb-3"><i class="bi bi-shield-lock"></i></div>
                                     <h5 class="card-title">SSL certificates</h5>
-                                    <p class="card-text text-body-secondary">Issue, renew and install certificates per host — Let's Encrypt, self-signed, or bring your own cert and key.</p>
+                                    <p class="card-text text-body-secondary">Issue, renew and install certificates per host — Let's Encrypt, self-signed, or bring your own cert and key. WOR keeps its own copy of each one, refreshes it on renewal, and lets you switch the HTTP&nbsp;→&nbsp;HTTPS redirect on or off per host.</p>
                                 </div>
                             </div>
                         </div>

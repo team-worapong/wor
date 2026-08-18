@@ -34,6 +34,11 @@ func (a *App) ensureRootDirs() error {
 	for _, d := range []string{
 		a.Cfg.WorHome, a.Cfg.Domains, a.Cfg.Backups, a.Cfg.Configs,
 		filepath.Join(a.Cfg.Configs, "database"), a.Cfg.Logs, a.Cfg.SSL,
+		// The ACME challenge tree is created here, by the operator,
+		// rather than left for certbot to mkdir as root -- certbot runs
+		// elevated, and a root-owned directory inside WOR_HOME is the
+		// exact problem DESIGN.md section 4 exists to avoid.
+		a.Cfg.ACME, filepath.Join(a.Cfg.ACME, ".well-known"), filepath.Join(a.Cfg.ACME, ".well-known", "acme-challenge"),
 		filepath.Join(a.Cfg.WorHome, "tmp"), filepath.Join(a.Cfg.WorHome, "scripts"), filepath.Join(a.Cfg.WorHome, "bin"),
 	} {
 		if err := osutil.EnsureDir(d); err != nil {

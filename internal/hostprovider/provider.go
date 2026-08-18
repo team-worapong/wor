@@ -32,7 +32,20 @@ type WriteParams struct {
 	SSLEnabled        bool
 	SSLCertFile       string
 	SSLKeyFile        string
-	SSLChainFile      string // Apache only
+	// ForceHTTPS turns the plain-HTTP side of this host into a
+	// redirect to HTTPS. It is only ever true together with
+	// SSLEnabled: the state it comes from lives beside the
+	// certificate, so removing the certificate removes it too, and a
+	// host can never end up redirecting to a certificate it does not
+	// have. See docs/ssl-redesign.md.
+	ForceHTTPS bool
+	// ACMEWebroot is the directory served at
+	// /.well-known/acme-challenge/ so certbot's webroot authenticator
+	// can answer challenges. Emitted unconditionally -- a host with no
+	// certificate yet is exactly the host about to request one -- and
+	// deliberately placed where the ForceHTTPS redirect cannot swallow
+	// it. Empty omits the directive entirely.
+	ACMEWebroot       string
 	PHPFPMEndpoint    string
 	DefaultPublicPath string
 	DocumentRoot      string // resolved absolute path to the service's document root
@@ -145,6 +158,112 @@ func (p *Provider) Start() error { return p.impl.start() }
 
 func (p *Provider) WriteConfig(params WriteParams) error {
 	return p.impl.writeConfig(params, params.SiteFile)
+}
+
+// HostConfigSnapshot records what one host's virtual host files looked
+// like before wor changed them, so a change that turns out to produce a
+// configuration the web server rejects can be undone before anything
+// reloads.
+//
+// This exists because the blast radius of a bad vhost is the whole
+// machine, not one site: `nginx -t` / `apachectl configtest` fails for
+// the entire configuration, so a reload issued anyway drops every site
+// on the host. Rolling back first reduces the worst case to "this one
+// host did not change", which every caller can cope with.
+//
+// Take one with Provider.SnapshotHostConfig before writing and hand it
+// to Provider.RestoreHostConfig if validation fails.
+type HostConfigSnapshot struct {
+	Host string
+
+	availableFile  string
+	availableData  []byte
+	availableFound bool
+	availableRead  bool
+
+	enabledFile     string
+	enabledFound    bool
+	enabledIsLink   bool
+	enabledData     []byte
+	enabledRead     bool
+	separateEnabled bool
+}
+
+// SnapshotHostConfig captures host's current vhost state. It never
+// fails: a host that does not exist yet snapshots as "absent", which
+// RestoreHostConfig undoes by deleting whatever was created.
+func (p *Provider) SnapshotHostConfig(host string) HostConfigSnapshot {
+	s := HostConfigSnapshot{
+		Host:          host,
+		availableFile: p.SiteAvailableFile(host),
+		enabledFile:   p.SiteEnabledFile(host),
+	}
+	// macOS/Windows use one flat directory, so there is no second file
+	// to track (see DESIGN.md section 3).
+	s.separateEnabled = s.enabledFile != s.availableFile
+
+	if data, err := os.ReadFile(s.availableFile); err == nil {
+		s.availableFound, s.availableRead, s.availableData = true, true, data
+	} else if !os.IsNotExist(err) {
+		// Present but unreadable. Unusual -- every layout wor writes
+		// leaves vhosts world-readable -- but record that the file
+		// exists so a restore does not delete someone else's config,
+		// and that its content cannot be put back.
+		s.availableFound = true
+	}
+	if s.separateEnabled {
+		// Whether the enabled entry is a symlink decides how it is
+		// restored: a symlink already points at the file put back
+		// above, but a plain copy (a2ensite on some layouts, or a
+		// platform without symlinks) holds its own content and would
+		// otherwise be left holding the rejected config while the
+		// caller reports a successful rollback.
+		if info, err := os.Lstat(s.enabledFile); err == nil {
+			s.enabledFound = true
+			s.enabledIsLink = info.Mode()&os.ModeSymlink != 0
+			if !s.enabledIsLink {
+				if data, err := os.ReadFile(s.enabledFile); err == nil {
+					s.enabledData, s.enabledRead = data, true
+				}
+			}
+		}
+	}
+	return s
+}
+
+// RestoreHostConfig undoes the change that s was taken before: a host
+// that did not exist has its files removed, and one that did has its
+// previous content written back.
+//
+// It deliberately does not reload. The caller reaches this path
+// precisely because the new configuration failed validation, and the
+// running server is still serving the old one from memory -- leaving it
+// alone is the safe outcome.
+func (p *Provider) RestoreHostConfig(s HostConfigSnapshot) error {
+	if s.separateEnabled && !s.enabledFound {
+		if err := osutil.RemoveFilePrivileged(s.enabledFile); err != nil {
+			return err
+		}
+	}
+	if !s.availableFound {
+		return osutil.RemoveFilePrivileged(s.availableFile)
+	}
+	if !s.availableRead {
+		return fmt.Errorf("cannot restore %s: its previous content was not readable when the change started", s.availableFile)
+	}
+	if err := osutil.WriteFilePrivileged(s.availableFile, s.availableData); err != nil {
+		return err
+	}
+	// A symlinked enabled entry already points at the file restored
+	// above and needs nothing further. A plain copy holds its own
+	// content, so it has to be written back too.
+	if s.separateEnabled && s.enabledFound && !s.enabledIsLink {
+		if !s.enabledRead {
+			return fmt.Errorf("cannot restore %s: it is a regular file whose previous content was not readable when the change started", s.enabledFile)
+		}
+		return osutil.WriteFilePrivileged(s.enabledFile, s.enabledData)
+	}
+	return nil
 }
 
 // RenderServiceConfig renders only the service-level config block (the

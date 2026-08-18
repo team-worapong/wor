@@ -38,7 +38,17 @@ conflict, `usage.go`/the actual code behavior wins).
   only a broad warning to also check SELinux; the check is skipped on
   macOS/Windows (macOS: Homebrew nginx usually runs as the login user, not a
   separate system account; Windows: a completely different permission
-  model).
+  model). Two more ⚠-only checks live in the same section:
+  (3) **WOR_HOME owned by root while you are not** -- wor works out who
+  should own the certificate files it copies from WOR_HOME's own
+  ownership, so this blocks `wor ssl sync`; root-owned *and* run by root
+  is a supported setup and is not reported (4) **Let's Encrypt
+  certificates with no renewal schedule** anywhere on the machine (no
+  systemd timer, launchd job or cron entry). Debian's certbot package
+  installs a timer, Homebrew's does not -- without one nothing renews
+  anything and the deploy hook never fires. wor reports the gap and
+  shows the command to check it, but never installs a schedule on its
+  own.
 - `wor env` -- show the current config/environment values
 - `wor clean` -- remove host configs/PM2 processes/systemd units/`/etc/hosts`
   entries that have become orphaned (no domain/service references them
@@ -191,6 +201,23 @@ works -- `wor diagnose <host>` is the real check).
 the entry in `/etc/hosts`, and the recorded SSL state
 (`$WOR_HOME/ssl/hosts/<host>/`) all in one command.
 
+### Every vhost change is validated before anything reloads
+
+Any command that writes a virtual host -- `host add`, `create`, and all
+of `wor ssl` -- now follows the same sequence: write the file, make sure
+it is enabled, run the web server's own config test, and reload **only**
+if the test passes. A configuration the server rejects is rolled back to
+what was there before and never reloaded.
+
+This matters more than it sounds. `nginx -t` and `apachectl configtest`
+validate the whole machine's configuration, so one bad vhost fails the
+test for every site -- and reloading anyway takes them all down, not just
+the host being changed. The worst case is now "this one host did not
+change", which is recoverable.
+
+`wor host test` and `wor host reload` are unchanged, and still available
+for checking or reloading by hand.
+
 ## Database
 
 ```
@@ -275,7 +302,10 @@ accepts only `domain/service`, not a bare domain.
 ## SSL
 
 ```
-wor ssl issue <host> [--provider=letsencrypt|self-signed|custom|none] [--preferred=<host>]
+wor ssl issue <host> [--provider=letsencrypt|self-signed|custom|none]
+    [--preferred=<host>] [--redirect|--no-redirect]
+wor ssl redirect <host> on|off
+wor ssl sync <host>
 wor ssl renew <host>
 wor ssl status <host>
 wor ssl remove <host> [--yes]
@@ -285,6 +315,93 @@ wor ssl install <host> --cert=/path/fullchain.pem --key=/path/privkey.pem
 `letsencrypt` (via certbot) is Unix-only (there is no trustworthy certbot
 build for Windows). `self-signed` (via `openssl` when available) and
 `custom` (bring your own certificate/key) work on every OS.
+
+### wor manages its own copy of every certificate
+
+Whatever the provider, the generated vhost points at
+
+```
+$WOR_HOME/ssl/hosts/<host>/fullchain.pem
+$WOR_HOME/ssl/hosts/<host>/privkey.pem
+```
+
+mode `0600`, owned by whoever owns WOR_HOME. Self-signed and custom
+certificates always worked this way; Let's Encrypt now does too, instead
+of the vhost referencing `/etc/letsencrypt/live/<host>/` directly.
+
+The reason is that certbot's real key lives in root-only
+`/etc/letsencrypt/archive/`. The web server's **master** process is what
+opens a certificate, and that is root on Linux but the login user on
+macOS (Homebrew starts it unprivileged) -- so on macOS the certificate
+was simply unreadable, which made the configuration invalid and took the
+whole web server down on the next reload, not just that one site.
+
+`privkey.pem` is never group- or world-readable. If the web server on
+your machine runs its master as some third user, that needs a dedicated
+group, not a wider mode.
+
+### HTTP -> HTTPS redirect
+
+`wor ssl issue` asks whether plain HTTP should redirect to HTTPS, and
+stores the answer per host. The default offered is:
+
+| certificate               | default |
+|---------------------------|---------|
+| `letsencrypt`             | on      |
+| `custom`                  | on      |
+| `self-signed`             | off     |
+| any local hostname        | off (overrides the above) |
+
+A local hostname means one with no dot, or ending in `.local`,
+`.localhost`, `.test`, `.example` or `.invalid`. Forcing HTTPS there
+would send visitors to a certificate no browser trusts, making the site
+unreachable without clicking through a warning every time.
+
+`--redirect` / `--no-redirect` answer without prompting, for scripts.
+`wor ssl redirect <host> on|off` changes it later without touching the
+certificate, and `wor ssl status` shows the current setting.
+
+The answer is stored, not recomputed: changing the provider or the
+hostname later never silently changes the redirect. Removing the
+certificate removes the setting with it, so a host can never end up
+redirecting to a certificate it no longer has.
+
+**Behaviour change on upgrade.** Previously apache redirected whenever a
+certificate existed with no way to turn it off, and nginx never
+redirected at all. A host whose `ssl.json` predates this setting keeps
+its old provider's behaviour -- apache hosts still redirect, nginx hosts
+still do not -- until you set it explicitly. `wor ssl status` marks such
+a value as inherited.
+
+### Renewal, and `wor ssl sync`
+
+Certificates are obtained with certbot's **webroot** authenticator,
+serving challenges from `$WOR_HOME/ssl/acme`. Every generated vhost
+exposes `/.well-known/acme-challenge/` from there, whether or not the
+host has a certificate yet, and the redirect above never captures that
+path. certbot's `--nginx`/`--apache` plugins are no longer used: they
+edit the vhost, which wor regenerates from templates on every write.
+
+`wor ssl issue` registers a certbot deploy hook so each renewal refreshes
+wor's copy automatically. `wor ssl sync <host>` is that same refresh, run
+by hand -- use it to migrate a host issued before wor kept its own copy,
+or to repair a copy that has drifted. It does nothing (and does not
+reload) when the certificate has not actually changed.
+
+Two things to know about renewal:
+
+- **Nothing renews certificates unless something is scheduled to.**
+  Debian's certbot package installs a systemd timer; Homebrew's does
+  not. `wor doctor` warns when Let's Encrypt certificates exist with no
+  schedule anywhere on the machine.
+- **A hook that fails leaves a stale copy**, and a stale copy serves an
+  expired certificate silently. Every sync records its result in
+  `$WOR_HOME/ssl/hosts/<host>/sync.json`, and `wor health` reports
+  certificate expiry as a warning, so this surfaces before it bites.
+
+`wor ssl sync` is the only subcommand allowed to run under `sudo`,
+because certbot runs deploy hooks as root. It writes just the two
+certificate files and hands them back to the operator.
 
 ## Info
 
@@ -326,8 +443,15 @@ of total machine RAM), Uptime (pm2 only), and an HTTP line
 `✓/⚠/✗ <url> -> <code>` -- CPU/Memory/Uptime lines with no data (static
 etc.) are hidden entirely rather than showing "-".
 
+Each card also carries a `cert` line for a service whose first host has a
+certificate: how many days it has left, or why the last `wor ssl sync`
+failed. Because wor serves its own copy of every certificate, a renewal
+hook that silently stopped working would otherwise show up only as an
+expired certificate weeks later -- this is the line that notices first.
+
 There are 3 status tiers: green ● = healthy, yellow ● = **Warning** (HTTP
-404 "may be normal for APIs," or no host to probe -- shown visibly but the
+404 "may be normal for APIs," no host to probe, or a certificate that is
+expiring, expired or failed its last sync -- shown visibly but the
 exit code stays 0 so cron/monitoring doesn't false-alarm), red ● = FAILED
 (broken process, or HTTP 4xx/5xx/refused/timeout). The report ends with a
 Healthy/Warning/Failed tally plus a `wor diagnose <target>` suggestion per

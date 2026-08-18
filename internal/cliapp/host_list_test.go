@@ -79,7 +79,9 @@ func TestPrintHostListEnabledDisabledSSL(t *testing.T) {
 	// api.example.com: enabled + ssl.
 	writeFile(t, filepath.Join(avail, "wor__api.example.com.conf"), "# api")
 	writeFile(t, filepath.Join(enabled, "wor__api.example.com.conf"), "# api")
-	if err := ssl.WriteState(app.Cfg.SSL, "api.example.com", "letsencrypt", "/cert", "/key", "enabled"); err != nil {
+	if err := ssl.WriteState(app.Cfg.SSL, "api.example.com", ssl.State{
+		Provider: "letsencrypt", CertFile: "/cert", KeyFile: "/key", AutoRenew: "enabled",
+	}); err != nil {
 		t.Fatalf("ssl.WriteState: %v", err)
 	}
 

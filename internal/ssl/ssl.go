@@ -22,17 +22,56 @@ type State struct {
 	CertFile  string `json:"certFile"`
 	KeyFile   string `json:"keyFile"`
 	AutoRenew string `json:"autoRenew"` // "enabled" | "disabled" | "unsupported"
+	// ForceHTTPS records whether plain-HTTP requests to this host are
+	// redirected to HTTPS. It is the operator's decision, resolved once
+	// when the certificate is issued and stored -- never recomputed
+	// from the provider or the hostname on later reads, or the
+	// behaviour they chose could change by itself.
+	//
+	// A pointer so that "never recorded" is distinguishable from
+	// "recorded as off". Files written before this field existed have
+	// no value, and the two web servers did opposite things then:
+	// apache redirected whenever a certificate existed, nginx never
+	// did. Reading absent as a flat false would silently switch every
+	// upgraded apache site back to serving plaintext on :80 -- an
+	// upgrade quietly *removing* a redirect is the direction that
+	// weakens a site, so absent means "whatever this provider did
+	// before" instead. See ForceHTTPSOr.
+	ForceHTTPS *bool `json:"forceHttps,omitempty"`
 }
+
+// ForceHTTPSOr resolves the redirect setting, falling back to
+// legacyDefault when the state predates the field. Callers pass the
+// behaviour their web server had before this setting existed, so an
+// upgrade changes nothing until the operator says otherwise.
+func (s State) ForceHTTPSOr(legacyDefault bool) bool {
+	if s.ForceHTTPS == nil {
+		return legacyDefault
+	}
+	return *s.ForceHTTPS
+}
+
+// Recorded reports whether the redirect setting was ever set
+// explicitly, so callers can tell the operator that a value they are
+// seeing is inherited rather than chosen.
+func (s State) Recorded() bool { return s.ForceHTTPS != nil }
+
+// SetForceHTTPS records an explicit decision.
+func (s *State) SetForceHTTPS(v bool) { s.ForceHTTPS = &v }
 
 func HostDir(sslRoot, host string) string   { return filepath.Join(sslRoot, "hosts", host) }
 func stateFile(sslRoot, host string) string { return filepath.Join(HostDir(sslRoot, host), "ssl.json") }
 
-func WriteState(sslRoot, host, provider, cert, key, autoRenew string) error {
+// WriteState records st as host's certificate state. It takes the whole
+// struct rather than a positional argument per field: there are enough
+// of them now that a call site reads as a row of bare strings, and
+// adding one silently shifts every caller's meaning.
+func WriteState(sslRoot, host string, st State) error {
 	dir := HostDir(sslRoot, host)
 	if err := osutil.EnsureDir(dir); err != nil {
 		return err
 	}
-	st := State{Enabled: true, Provider: provider, CertFile: cert, KeyFile: key, AutoRenew: autoRenew}
+	st.Enabled = true
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err

@@ -80,7 +80,22 @@ Usage:
       uncommitted local changes -- backs up via "wor source backup"
       first; requires domain/service, never a bare domain)
 
-  wor ssl issue <host> [--provider=letsencrypt|self-signed|custom|none] [--preferred=<host>]
+  wor ssl issue <host> [--provider=letsencrypt|self-signed|custom|none] [--preferred=<host>] [--redirect|--no-redirect]
+      (asks whether plain HTTP should redirect to HTTPS. The default
+      offered is on for a letsencrypt/custom certificate and off for a
+      self-signed one or any local hostname, because a redirect to a
+      certificate the browser does not trust makes the site unreachable
+      without clicking through a warning. --redirect/--no-redirect
+      answer it without prompting.)
+  wor ssl redirect <host> on|off
+      (turns the HTTP -> HTTPS redirect on or off for a host that
+      already has a certificate, without reissuing it)
+  wor ssl sync <host>
+      (refreshes wor's own copy of the certificate from certbot's store
+      and reloads. Registered automatically as certbot's deploy hook, so
+      renewals pick themselves up; run it by hand to migrate a host
+      issued before wor kept its own copy, or to repair a copy that has
+      drifted.)
   wor ssl renew <host>
   wor ssl status <host>
   wor ssl remove <host> [--yes]

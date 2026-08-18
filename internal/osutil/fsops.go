@@ -92,6 +92,26 @@ func WriteFilePrivileged(path string, data []byte) error {
 	return nil
 }
 
+// ReadFilePrivileged reads path, escalating on Unix if a direct read is
+// refused. Needed for certbot's certificate store, whose private keys
+// live under a root-only directory: wor reads them as the operator when
+// migrating a host by hand, and as root when certbot's own renewal hook
+// invokes it.
+func ReadFilePrivileged(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return data, nil
+	}
+	if !os.IsPermission(err) {
+		return nil, err
+	}
+	data, ferr := readFilePrivilegedFallback(path)
+	if ferr != nil {
+		return nil, fmt.Errorf("cannot read %s: %w (%s)", path, ferr, ElevationHint())
+	}
+	return data, nil
+}
+
 // RemoveFilePrivileged removes path if it exists, escalating on Unix
 // when needed. Missing files are not an error (matches the shell
 // version's `[[ -e "$path" ]] || return 0` guard).

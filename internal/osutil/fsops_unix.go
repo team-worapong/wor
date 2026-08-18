@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 )
 
 func ensureDirPrivileged(dir string) error {
@@ -50,6 +51,46 @@ func writeFilePrivilegedFallback(path string, data []byte) error {
 // argv element (which never went through shell interpretation before).
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func readFilePrivilegedFallback(path string) ([]byte, error) {
+	cmd, err := SudoCommand("cat", path)
+	if err != nil {
+		return nil, err
+	}
+	// Only stdout is captured; stderr keeps streaming so sudo's own
+	// prompt and any error text still reach the operator.
+	cmd.Stderr = os.Stderr
+	return cmd.Output()
+}
+
+// FileOwner returns the numeric uid/gid owning path. Symlinks are
+// followed (Stat, not Lstat): WOR_HOME is allowed to be a symlink, and
+// what matters is who owns the directory it points at.
+func FileOwner(path string) (uid, gid int, err error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, fmt.Errorf("cannot read ownership of %s on this platform", path)
+	}
+	return int(st.Uid), int(st.Gid), nil
+}
+
+// Chown sets path's owner, escalating only if the direct call is
+// refused. Running as the owner already -- the common case when an
+// operator invokes wor themselves -- never prompts.
+func Chown(path string, uid, gid int) error {
+	if err := os.Chown(path, uid, gid); err == nil {
+		return nil
+	}
+	cmd, err := SudoCommand("chown", fmt.Sprintf("%d:%d", uid, gid), path)
+	if err != nil {
+		return err
+	}
+	return cmd.Run()
 }
 
 func removeFilePrivilegedFallback(path string) error {

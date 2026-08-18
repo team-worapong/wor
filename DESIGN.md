@@ -580,8 +580,214 @@ only ever run from a working copy where the bit had been set locally, so
 nobody noticed. The CI workflow invokes it directly, which is what
 surfaced it.
 
+## 19. Vhost writes are validated before anything reloads
+
+Every path that generates a virtual host now goes through one function,
+`cliapp.applyHostParams`: snapshot the current files, write, enable,
+run the web server's own config test, and reload only if it passes. A
+configuration the server rejects is rolled back and never reloaded.
+
+Before this, the SSL paths wrote a vhost and reloaded with no test in
+between, and nothing rolled anything back. That is what turned a single
+unreadable certificate into a dead web server: one invalid vhost fails
+`nginx -t` / `apachectl configtest` for the *whole machine*, so the
+reload took down every site rather than the one being changed. The
+per-service php-fpm pool code (section 8) already validated before
+touching anything live and rolled back on failure; this applies the
+same shape to vhosts.
+
+Consequences worth knowing:
+
+- Enabling now happens for every caller, not just `host add`. On Linux
+  the config test only sees files in sites-enabled, so testing a host
+  that had been written but not enabled would validate nothing. The step
+  is idempotent, and repairs a host whose sites-enabled entry went
+  missing.
+- `hostprovider.SnapshotHostConfig`/`RestoreHostConfig` record whether
+  the sites-enabled entry was a symlink or a plain copy, because a copy
+  holds its own content and has to be written back too.
+- The rule this encodes: one host failing to come up is acceptable, the
+  web server going down for every site is not.
+
+A related ordering bug was fixed at the same time. `wor ssl remove`
+regenerated the vhost *before* clearing the certificate state, so the
+regenerated file still pointed at certificate files the same command
+was about to delete. The state is now cleared first and the files are
+deleted last, after the SSL-free vhost has been validated and reloaded.
+
+## 20. HTTP -> HTTPS redirect is an explicit per-host setting
+
+Previously apache redirected to HTTPS whenever a certificate existed,
+with no way to switch it off, and nginx never redirected at all. Neither
+was something the operator chose. Both providers now read one stored
+flag, `forceHttps`, in `$WOR_HOME/ssl/hosts/<host>/ssl.json`.
+
+The value is resolved once, when the certificate is issued, and stored.
+It is never recomputed from the provider or the hostname on later reads
+-- recomputing would let a behaviour the operator chose change by
+itself. The default offered at that moment is on for a `letsencrypt` or
+`custom` certificate, off for `self-signed`, and off for any local
+hostname regardless (forcing HTTPS with a certificate no browser trusts
+makes a site unreachable without clicking through a warning every
+visit). `--redirect`/`--no-redirect` answer without prompting, and
+`wor ssl redirect <host> on|off` changes it later without reissuing.
+
+**`WOR_ENV` was considered and rejected as an input.** It is
+machine-wide while this is per-host, and `internal/config` infers it
+when the user never set one -- so a production host left at
+`development` would quietly stop redirecting, with nothing reporting it.
+The provider field carries the same intent and is always explicit.
+
+The field is a `*bool`, so "never recorded" is distinguishable from
+"recorded as off". State files written before it existed have no value,
+and `cliapp.storedForceHTTPS` resolves those to *the active provider's
+old behaviour* -- on for apache, off for nginx. Reading absent as a flat
+false would have silently switched every upgraded apache site back to
+serving plaintext on port 80; an upgrade quietly removing a redirect is
+the direction that weakens a site.
+
+nginx's template is now split into separate `:80` and `:443` server
+blocks, matching apache's two VirtualHosts. The redirect lives inside
+`location /` rather than at server level, because a server-level
+`return` runs before nginx picks a location and would swallow the ACME
+challenge below it. With the redirect on, the `:80` block carries only
+the ACME location, the host check, and the redirect -- the service
+config and the per-service custom include (section 17) move to the
+`:443` block, since a snippet in a redirect-only block could never run.
+
+`WriteParams.SSLChainFile`, `apacheSSLChainFileLine()` and
+`{{APACHE_SSL_CHAIN_FILE}}` were removed in the same pass: nothing ever
+populated the field, and `SSLCertificateChainFile` is both deprecated
+since Apache 2.4.8 and unnecessary when serving `fullchain.pem`.
+
+## 21. wor keeps its own copy of every certificate
+
+The vhost now points at `$WOR_HOME/ssl/hosts/<host>/{fullchain,privkey}.pem`
+for all three SSL providers, not just self-signed and custom. Let's
+Encrypt used to be the exception, with the vhost referencing
+`/etc/letsencrypt/live/<host>/` directly.
+
+That exception is what broke a real machine. The key those symlinks
+point at lives in root-only `/etc/letsencrypt/archive/`, which the web
+server's *master* process can read on Linux (systemd runs it as root)
+but not on macOS, where Homebrew starts it as the login user -- the same
+structural problem section 8 hit with php-fpm pools. An unreadable
+certificate makes the configuration invalid, and section 19 explains
+why that took the whole server down rather than one site.
+
+Copying removes the asymmetry. The copies are mode `0600` owned by the
+operator, which is sufficient on both platforms with no ACL, no group
+and no chown of anything else: the master reads certificates, and it is
+root on Linux and the operator on macOS. `privkey.pem` is never made
+group- or world-readable -- fixing an outage by exposing a private key
+to every process on the machine is not a trade this makes.
+
+Granting the web server user ACL access to `/etc/letsencrypt` was the
+alternative, and was rejected: it cannot work on macOS at all, and it
+means reaching into a directory another tool owns.
+
+### `wor ssl sync`
+
+One new subcommand does three jobs: it is what certbot's deploy hook
+calls after each renewal, how a host issued before this change is
+migrated, and the manual repair when the copy and the source have
+drifted. It is idempotent -- an unchanged certificate produces no write
+and no reload, so a hook firing for a certificate that did not move does
+not churn the web server.
+
+The owner for the copied files is **derived from WOR_HOME's own
+ownership, never stored**. The hook runs from certbot as plain root with
+no `SUDO_USER` to read, and baking a numeric uid into the hook command
+at issue time would go stale the moment the machine is rebuilt or the
+account changes, handing a private key to whichever unrelated account
+then held that number. A root-owned WOR_HOME is refused *unless the
+caller is also root*, which is the supported "server with no account but
+root" case from section 4.
+
+This is a general rule worth stating: **store decisions, derive facts.**
+A decision the operator made (`forceHttps`) must be stored and never
+recomputed, or the behaviour they chose changes by itself. A fact about
+the machine (who owns WOR_HOME) must be derived at the point of use and
+never stored, or it goes stale and becomes wrong.
+
+The hook carries `WOR_HOME` explicitly and an absolute binary path,
+because it runs as root months later: as root, `~/.wor/config` is root's
+own, and the per-OS default WOR_HOME (`$HOME/wor` on macOS) resolves to
+root's home rather than the operator's, so the hook would sync into the
+wrong workspace.
+
+### Issuance moved to `--webroot`
+
+certbot's `--nginx`/`--apache` plugins work by editing the vhost, which
+wor regenerates from templates on every write -- two tools owning one
+generated file, which is exactly what section 17 avoids for user
+customisation. The two-block split in section 20 made the conflict
+concrete: both blocks carry the same `server_name`, so which one the
+plugin patches is not something to depend on.
+
+With `--webroot`, certbot writes a challenge file into
+`$WOR_HOME/ssl/acme` and touches nothing else. The host provider stops
+mattering for issuance, so nginx and apache share one code path, and wor
+performs the reload itself -- routing it through section 19's
+validate-then-reload helper. Every generated `:80` block serves
+`/.well-known/acme-challenge/` unconditionally, whether or not the host
+has a certificate yet, because a host with no certificate is precisely
+the host about to request one; `wor ssl issue` regenerates the vhost
+before invoking certbot so that a host created by an older version has
+that location before the challenge arrives.
+
+### Detection, because prevention is not enough
+
+Copying introduces one risk the old design did not have: if the deploy
+hook ever fails, the copy goes stale and the site serves an **expired**
+certificate silently, which is worse than failing loudly. Three layers
+answer that:
+
+- the deploy hook (prevention);
+- `wor health` reports certificate expiry as its yellow Warning tier,
+  so the exit code stays 0 and cron does not alarm on something days
+  away (detection of the outcome);
+- every `wor ssl sync` records its result in
+  `$WOR_HOME/ssl/hosts/<host>/sync.json`, read back by `ssl status`,
+  `health` and `diagnose` (detection of the cause). wor has no log of
+  its own, so a hook that fails at 03:00 would otherwise leave a trace
+  only in the renewal job's output, which nobody reads.
+
+A general wor log file was considered and deliberately deferred: it is a
+feature in its own right (rotation, levels, which commands write) and
+does not belong inside an SSL change.
+
+`wor doctor` gained two related checks, both warnings that never affect
+the exit code: a WOR_HOME owned by root when the caller is not, and
+Let's Encrypt certificates with no renewal schedule anywhere on the
+machine. The second is not hypothetical -- on the macOS machine this
+work came from there was no systemd timer, no launchd job and no root
+crontab, so nothing was going to renew anything and the hook would never
+have fired. It follows the precedent set in section 9 for `pm2 startup`:
+report the gap, offer the command, never install it silently.
+
 ## Known gaps / still to verify
 
+- **The SSL rework (sections 19-21) has not been run against a real
+  certificate authority yet.** It builds, vets and tests clean on every
+  target, and the generated configs are covered by rendering tests, but
+  the end-to-end path -- `certbot --webroot`, the deploy hook firing on
+  a real renewal, `wor ssl sync` running as root from that hook -- has
+  not been exercised. On the machine it was written for, port 80 was
+  not reachable from the internet at the time (dynamic DNS switched
+  off), so even `certbot --dry-run` could not complete. Verify with a
+  dry run before trusting it in production.
+- The two existing Let's Encrypt hosts on that machine
+  (`team.ddns.net`, `team-pma.ddns.net`) still record
+  `authenticator = nginx` in their renewal configs. `wor ssl sync`
+  migrates the certificate copy, but moving them onto webroot needs a
+  reissue -- and certbot only rewrites a renewal config when it
+  actually obtains a certificate, so `wor ssl issue` warns when the
+  deploy hook did not end up registered.
+- `Preferred` (which of a host's names is canonical) is still not
+  persisted anywhere: it is passed on the command line and lost on the
+  next regeneration. Pre-existing, but sections 19-21 regenerate vhosts
+  more often, so it surfaces more.
 - **Partially built/run for real**: during the initial port, the sandbox
   used for writing had no Go toolchain at all, so the code was never
   compiled then. Since then the user has run `go build`/executed it for

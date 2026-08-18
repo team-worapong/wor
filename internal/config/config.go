@@ -28,7 +28,13 @@ type Config struct {
 	Configs string
 	Logs    string
 	SSL     string
-	Tmp     string
+	// ACME is the webroot certbot writes HTTP-01 challenges into, and
+	// that every generated vhost serves at
+	// /.well-known/acme-challenge/. One directory for the whole
+	// machine: the challenge filename is what identifies the request,
+	// not the path, so there is nothing to separate per host.
+	ACME string
+	Tmp  string
 
 	HostProvider string // "", "nginx", "apache", or "skip"
 	SSLProvider  string // "", "letsencrypt", "self-signed", "custom", "none"
@@ -133,6 +139,7 @@ func Load() (*Config, error) {
 	c.Configs = filepath.Join(c.WorHome, "configs")
 	c.Logs = filepath.Join(c.WorHome, "logs")
 	c.SSL = filepath.Join(c.WorHome, "ssl")
+	c.ACME = filepath.Join(c.SSL, "acme")
 	if tmp := os.Getenv("TMPDIR"); tmp != "" {
 		c.Tmp = tmp
 	} else {

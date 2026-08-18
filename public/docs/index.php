@@ -25,10 +25,17 @@ if (is_dir($releasesDir)) {
 
 /**
  * Minimal markdown renderer for docs/commands.md — supports exactly what
- * that file uses: #/## headings, ``` fences, "- " and "1. " lists with
- * indented continuation lines, `code`, **bold**, and paragraphs.
+ * that file uses: #/##/### headings, ``` fences, "- " and "1. " lists
+ * with indented continuation lines, pipe tables, `code`, **bold**, and
+ * paragraphs.
  * Returns [html, toc] where toc is [[slug, title], ...] from ## headings.
  * The single # H1 is skipped (the page renders its own section heading).
+ * ### subheadings are rendered but kept out of the sidebar, which would
+ * otherwise be longer than the page.
+ *
+ * Anything this does not recognise falls through to a paragraph and
+ * shows up as literal markup on the page, so a syntax added to
+ * commands.md has to be added here too.
  */
 function mdRender(string $md): array {
     $inline = function (string $s): string {
@@ -63,6 +70,39 @@ function mdRender(string $md): array {
         }
     };
 
+    $table = null; // ['rows' => [[cell, ...], ...]]
+    $flushTable = function () use (&$html, &$table, $inline) {
+        if (!$table) {
+            return;
+        }
+        $rows = $table['rows'];
+        $table = null;
+        // A pipe table needs at least a header and its separator row;
+        // anything shorter is not a table, so emit it verbatim rather
+        // than silently swallowing the text.
+        if (count($rows) < 2) {
+            foreach ($rows as $cells) {
+                $html .= '<p>' . $inline('| ' . implode(' | ', $cells) . ' |') . "</p>\n";
+            }
+            return;
+        }
+        $header = array_shift($rows);
+        array_shift($rows); // the |---|---| separator
+        $html .= '<div class="table-responsive mb-4"><table class="table table-sm align-middle"><thead><tr>';
+        foreach ($header as $cell) {
+            $html .= '<th>' . $inline($cell) . '</th>';
+        }
+        $html .= '</tr></thead><tbody>';
+        foreach ($rows as $cells) {
+            $html .= '<tr>';
+            foreach ($cells as $cell) {
+                $html .= '<td>' . $inline($cell) . '</td>';
+            }
+            $html .= '</tr>';
+        }
+        $html .= "</tbody></table></div>\n";
+    };
+
     foreach (explode("\n", $md) as $line) {
         if (preg_match('/^```/', $line)) {
             if ($inFence) {
@@ -73,6 +113,7 @@ function mdRender(string $md): array {
             } else {
                 $flushPara();
                 $flushList();
+                $flushTable();
             }
             $inFence = !$inFence;
             continue;
@@ -85,11 +126,30 @@ function mdRender(string $md): array {
         if (trim($line) === '') {
             $flushPara();
             $flushList();
+            $flushTable();
+            continue;
+        }
+        if (preg_match('/^\s*\|(.*)\|\s*$/', $line, $m)) {
+            $flushPara();
+            $flushList();
+            $cells = array_map('trim', explode('|', $m[1]));
+            if ($table === null) {
+                $table = ['rows' => []];
+            }
+            $table['rows'][] = $cells;
+            continue;
+        }
+        if (preg_match('/^###\s+(.*)$/', $line, $m)) {
+            $flushPara();
+            $flushList();
+            $flushTable();
+            $html .= '<h5 class="fw-bold mt-4 mb-2">' . $inline($m[1]) . "</h5>\n";
             continue;
         }
         if (preg_match('/^##\s+(.*)$/', $line, $m)) {
             $flushPara();
             $flushList();
+            $flushTable();
             $slug = 'cmd-' . $slugify($m[1]);
             $toc[] = [$slug, $m[1]];
             $html .= '<h4 class="fw-bold mt-5 mb-3 nav-anchor" id="' . $slug . '">' . $inline($m[1]) . "</h4>\n";
@@ -98,10 +158,12 @@ function mdRender(string $md): array {
         if (preg_match('/^#\s+/', $line)) {
             $flushPara();
             $flushList();
+            $flushTable();
             continue; // H1 skipped -- page has its own heading
         }
         if (preg_match('/^- (.*)$/', $line, $m)) {
             $flushPara();
+            $flushTable();
             if (!$list || $list['tag'] !== 'ul') {
                 $flushList();
                 $list = ['tag' => 'ul', 'items' => []];
@@ -111,6 +173,7 @@ function mdRender(string $md): array {
         }
         if (preg_match('/^\d+\. (.*)$/', $line, $m)) {
             $flushPara();
+            $flushTable();
             if (!$list || $list['tag'] !== 'ol') {
                 $flushList();
                 $list = ['tag' => 'ol', 'items' => []];
@@ -127,6 +190,7 @@ function mdRender(string $md): array {
     }
     $flushPara();
     $flushList();
+    $flushTable();
     return [$html, $toc];
 }
 
@@ -290,6 +354,7 @@ if (is_readable($commandsPath)) {
                                 <li class="nav-item"><a class="nav-link" href="#install">Install</a></li>
                                 <li class="nav-item"><a class="nav-link" href="#quickstart">Quick start</a></li>
                                 <li class="nav-item"><a class="nav-link" href="#templates">Service templates</a></li>
+                                <li class="nav-item"><a class="nav-link" href="#tls">TLS certificates</a></li>
                             </ul>
                             <?php if ($commandsToc): ?>
                             <div class="sidebar-heading fw-bold mb-2">Command reference</div>
@@ -499,13 +564,44 @@ wor deploy myapp.example.com" aria-label="Copy"><i class="bi bi-clipboard"></i><
                                 <span class="step-num">4</span>
                                 <div class="flex-grow-1">
                                     <h5 class="mb-1">Secure &amp; monitor</h5>
-                                    <p class="text-body-secondary mb-2">Issue a certificate and keep an eye on the fleet.</p>
+                                    <p class="text-body-secondary mb-2">Issue a certificate and keep an eye on the fleet. WOR asks whether plain HTTP should redirect to HTTPS — pass <code>--redirect</code> or <code>--no-redirect</code> to answer without prompting.</p>
                                     <div class="code-block">
                                         <pre><span class="prompt">$</span> wor ssl issue myapp.example.com --provider=letsencrypt
 <span class="prompt">$</span> wor health</pre>
                                         <button class="btn btn-sm btn-copy" data-copy="wor ssl issue myapp.example.com --provider=letsencrypt
 wor health" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
                                     </div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- TLS -->
+                        <section id="tls" class="nav-anchor mb-5">
+                            <h2 class="fw-bold mb-3"><i class="bi bi-shield-lock me-2 text-primary"></i>TLS certificates</h2>
+
+                            <p class="text-body-secondary">WOR keeps its own copy of every certificate, whatever the provider, and points the generated virtual host at that copy:</p>
+                            <div class="code-block mb-3">
+                                <pre>$WOR_HOME/ssl/hosts/&lt;host&gt;/fullchain.pem
+$WOR_HOME/ssl/hosts/&lt;host&gt;/privkey.pem</pre>
+                            </div>
+                            <p class="text-body-secondary">Mode <code>0600</code>, owned by whoever owns <code>WOR_HOME</code>. That one rule works on both platforms without any ACL, because the process that reads a certificate is the web server's <em>master</em> — root on Linux, and your login user under Homebrew on macOS. Let's Encrypt certificates are copied out of certbot's store rather than referenced in place: the real key lives in root-only <code>/etc/letsencrypt/archive</code>, which an unprivileged master cannot read at all.</p>
+
+                            <h5 class="fw-bold mt-4 mb-2">Redirecting HTTP to HTTPS</h5>
+                            <p class="text-body-secondary">The redirect is a per-host setting you choose when the certificate is issued, and can change any time without reissuing:</p>
+                            <div class="code-block mb-3">
+                                <pre><span class="prompt">$</span> wor ssl redirect myapp.example.com on
+<span class="prompt">$</span> wor ssl status myapp.example.com</pre>
+                                <button class="btn btn-sm btn-copy" data-copy="wor ssl redirect myapp.example.com on
+wor ssl status myapp.example.com" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
+                            </div>
+                            <p class="text-body-secondary">The default offered is <strong>on</strong> for a Let's Encrypt or custom certificate and <strong>off</strong> for a self-signed one or any local hostname — a redirect to a certificate the browser does not trust makes a site unreachable without clicking through a warning every visit.</p>
+
+                            <h5 class="fw-bold mt-4 mb-2">Renewal</h5>
+                            <p class="text-body-secondary">Certificates are obtained with certbot's webroot authenticator, and <code>wor ssl issue</code> registers a deploy hook so each renewal refreshes WOR's copy on its own. Run <code>wor ssl sync &lt;host&gt;</code> by hand to migrate a host issued by an older version, or to repair a copy that has drifted.</p>
+                            <div class="alert alert-warning d-flex gap-2" role="alert">
+                                <i class="bi bi-exclamation-triangle-fill flex-shrink-0"></i>
+                                <div>
+                                    <strong>Check that something actually renews.</strong> Debian's certbot package installs a systemd timer; Homebrew's does not. With no schedule, nothing renews and the deploy hook never fires. <code>wor doctor</code> warns when Let's Encrypt certificates exist with no schedule on the machine, and <code>wor health</code> reports certificate expiry as a warning.
                                 </div>
                             </div>
                         </section>

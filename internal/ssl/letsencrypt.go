@@ -3,6 +3,7 @@ package ssl
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"wor/internal/osutil"
 )
@@ -14,41 +15,71 @@ func letsEncryptRenewalConf(host string) string {
 	return "/etc/letsencrypt/renewal/" + host + ".conf"
 }
 
-// IssueLetsEncrypt runs certbot against the configured host provider's
-// plugin (--nginx or --apache), matching
-// lib/providers/ssl/letsencrypt.sh ssl_issue_letsencrypt(). Certbot has
-// no official native Windows support, so this returns a clear error
-// there rather than attempting something unreliable.
-func IssueLetsEncrypt(hostProviderName, primaryHost string, aliases []string) error {
+// IssueLetsEncrypt obtains a certificate with certbot's webroot
+// authenticator, writing challenges into webroot and registering
+// deployHook so every later renewal refreshes wor's own copy.
+//
+// It used to use certbot's --nginx/--apache plugins. Those work by
+// editing the vhost, which wor regenerates from templates on every
+// write -- two tools owning one generated file, which is exactly what
+// DESIGN.md section 17 avoids for user customisation. Splitting the
+// nginx template into separate :80 and :443 blocks made the conflict
+// concrete: both blocks carry the same server_name, so which one the
+// plugin patches its challenge into is not something to depend on, and
+// picking the :443 block would leave an HTTP-01 challenge unanswered.
+//
+// With webroot, certbot writes a file and touches nothing else. As a
+// side effect the host provider stops mattering here at all, so nginx
+// and apache now issue certificates through one code path, and wor --
+// not certbot -- performs the reload, which routes it through the
+// validate-then-reload helper the rest of the project uses.
+//
+// certbot has no official native Windows support, so this returns a
+// clear error there rather than attempting something unreliable.
+func IssueLetsEncrypt(primaryHost string, aliases []string, webroot, deployHook string) error {
 	if osutil.IsWindows() {
 		return fmt.Errorf("Let's Encrypt via certbot is not supported on Windows; use --provider=self-signed or --provider=custom")
 	}
 	if !osutil.Exists("certbot") {
 		return fmt.Errorf("certbot not found")
 	}
-	var pluginFlag string
-	switch hostProviderName {
-	case "nginx":
-		pluginFlag = "--nginx"
-	case "apache":
-		pluginFlag = "--apache"
-	default:
-		return fmt.Errorf("unsupported host provider: %s", hostProviderName)
+	if webroot == "" {
+		return fmt.Errorf("no ACME webroot configured; run wor setup")
 	}
 
-	args := []string{pluginFlag}
+	args := []string{"certonly", "--webroot", "-w", webroot}
 	for _, d := range append([]string{primaryHost}, aliases...) {
 		args = append(args, "-d", d)
 	}
+	if deployHook != "" {
+		args = append(args, "--deploy-hook", deployHook)
+	}
 
 	if pathExistsAny(letsEncryptRenewalConf(primaryHost)) || pathExistsAny(LetsEncryptCertDir(primaryHost)) {
-		args = append(args, "--reinstall", "--non-interactive")
+		// --force-renewal is deliberately NOT added: re-running issue
+		// on an unexpired certificate should reuse it, not spend a
+		// rate-limited issuance. What this does do is let certbot
+		// rewrite the renewal config, which is how a host moves off the
+		// old --nginx authenticator onto webroot.
+		args = append(args, "--non-interactive", "--keep-until-expiring")
 	}
 	cmd, err := osutil.SudoCommand("certbot", args...)
 	if err != nil {
 		return err
 	}
 	return cmd.Run()
+}
+
+// RenewalConfHasDeployHook reports whether host's renewal config already
+// runs a deploy hook. Used to tell an operator that a host predating
+// this change will not refresh wor's copy on its own until it is
+// reissued.
+func RenewalConfHasDeployHook(host string) (bool, error) {
+	data, err := osutil.ReadFilePrivileged(letsEncryptRenewalConf(host))
+	if err != nil {
+		return false, err
+	}
+	return strings.Contains(string(data), "renew_hook") || strings.Contains(string(data), "deploy_hook"), nil
 }
 
 // RenewLetsEncrypt runs `certbot renew`, matching ssl_renew_letsencrypt().

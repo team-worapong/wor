@@ -291,15 +291,36 @@ func apacheRedirectBlock(host string, aliases []string, preferred string) string
 	return fmt.Sprintf("RewriteEngine On\n    RewriteCond %%{HTTP_HOST} ^%s$ [NC]\n    RewriteRule ^/(.*)$ %%{REQUEST_SCHEME}://%s/$1 [R=301,L]", regex, preferred)
 }
 
-func apacheHTTPRedirectBlock(host string, aliases []string, preferred string, sslEnabled bool) string {
-	if sslEnabled {
-		target := host
-		if preferred != "" && len(aliases) > 0 {
-			target = preferred
-		}
-		return fmt.Sprintf("RewriteEngine On\n    RewriteRule ^/(.*)$ https://%s/$1 [R=301,L]", target)
+// apacheHTTPRedirectBlock builds the :80 vhost's redirect. With
+// ForceHTTPS on it sends everything to HTTPS; otherwise it falls back
+// to the canonical-hostname redirect, which is scheme-preserving.
+//
+// Until this became an explicit per-host setting, apache redirected to
+// HTTPS whenever a certificate existed and offered no way to turn it
+// off, while nginx never redirected at all. Both now read the same
+// flag (docs/ssl-redesign.md).
+//
+// The RewriteCond is what keeps certificate renewal working: mod_rewrite
+// runs before Alias, so without the exclusion the redirect would also
+// catch certbot's webroot challenge.
+func apacheHTTPRedirectBlock(host string, aliases []string, preferred string, forceHTTPS bool) string {
+	if forceHTTPS {
+		target := httpsRedirectTarget(preferred, "%{HTTP_HOST}")
+		return fmt.Sprintf("RewriteEngine On\n    RewriteCond %%{REQUEST_URI} !^/\\.well-known/acme-challenge/\n    RewriteRule ^/(.*)$ https://%s/$1 [R=301,L]", target)
 	}
 	return apacheRedirectBlock(host, aliases, preferred)
+}
+
+// apacheACMEAlias exposes certbot's webroot at the well-known challenge
+// path, or "" when no webroot is configured. See nginxACMELocation for
+// the reasoning; the redirect exclusion above is apache's equivalent of
+// nginx's longest-prefix rule.
+func apacheACMEAlias(webroot string) string {
+	if webroot == "" {
+		return ""
+	}
+	dir := filepath.Join(webroot, ".well-known", "acme-challenge")
+	return fmt.Sprintf("Alias /.well-known/acme-challenge/ %q\n    <Directory %q>\n        Require all granted\n        Options None\n        AllowOverride None\n    </Directory>", dir+string(filepath.Separator), dir)
 }
 
 func apacheDocumentRootLine(documentRoot string) string {
@@ -307,13 +328,6 @@ func apacheDocumentRootLine(documentRoot string) string {
 		return ""
 	}
 	return fmt.Sprintf("DocumentRoot %q", documentRoot)
-}
-
-func apacheSSLChainFileLine(chainFile string) string {
-	if chainFile == "" {
-		return ""
-	}
-	return fmt.Sprintf("SSLCertificateChainFile %q", chainFile)
 }
 
 // apacheCustomInclude returns the directive that pulls a service's
@@ -345,8 +359,8 @@ func (a *apacheProvider) baseVars(p WriteParams) map[string]string {
 		"HOST":                      p.Host,
 		"SERVER_NAMES":              strings.TrimSpace(p.Host + " " + strings.Join(p.Aliases, " ")),
 		"APACHE_SERVER_ALIAS":       apacheServerAliasLine(p.Aliases),
-		"APACHE_HTTP_REDIRECT":      apacheHTTPRedirectBlock(p.Host, p.Aliases, p.Preferred, p.SSLEnabled),
-		"APACHE_SSL_CHAIN_FILE":     apacheSSLChainFileLine(p.SSLChainFile),
+		"APACHE_HTTP_REDIRECT":      apacheHTTPRedirectBlock(p.Host, p.Aliases, p.Preferred, p.SSLEnabled && p.ForceHTTPS),
+		"APACHE_ACME_ALIAS":         apacheACMEAlias(p.ACMEWebroot),
 		"DOMAIN":                    p.Domain,
 		"SERVICE":                   p.Service,
 		"PORT":                      portString(p.Port),
@@ -389,9 +403,20 @@ func (a *apacheProvider) writeConfig(p WriteParams, siteFile string) error {
 		if err != nil {
 			return err
 		}
+		// Render the :443 vhost first, while the serving directives are
+		// still in vars -- the :80 vhost may need them blanked below.
 		vars["APACHE_HTTPS_VHOST"] = render.Render(httpsTpl, vars)
 	} else {
 		vars["APACHE_HTTPS_VHOST"] = ""
+	}
+
+	// With ForceHTTPS on, the :80 vhost only answers ACME challenges and
+	// redirects, so its copy of the service config and custom include is
+	// unreachable. Dropping it keeps the generated file honest about
+	// what actually serves traffic, and matches the nginx shape.
+	if p.SSLEnabled && p.ForceHTTPS {
+		vars["APACHE_SERVICE_CONFIG"] = ""
+		vars["APACHE_CUSTOM_INCLUDE"] = ""
 	}
 
 	out := render.Render(httpTemplate, vars)

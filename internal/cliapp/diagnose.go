@@ -1803,12 +1803,22 @@ func (a *App) cmdHealth(args []string) (bool, error) {
 		// the dot color and the footer count, but the exit code stays
 		// 0 so cron/monitoring only alerts on real failures.
 		probeRan := httpURL != "" || httpNote != ""
+		certLine, certProblem := a.certificateHealth(ref)
 		level := 0
 		switch {
 		case !svcOK:
 			level = 2
 			failedTargets = append(failedTargets, target)
 		case httpCode == "404" || (probeRan && httpURL == ""):
+			level = 1
+			warned++
+		case certProblem:
+			// A certificate that is expiring, expired, or whose last
+			// sync failed is a warning, not a failure: the site is
+			// still serving right now, and the exit code has to stay 0
+			// so cron does not alarm on something that is days away.
+			// This is the layer that catches a renewal hook nobody
+			// noticed failing -- see docs/ssl-redesign.md.
 			level = 1
 			warned++
 		default:
@@ -1856,6 +1866,14 @@ func (a *App) cmdHealth(args []string) (bool, error) {
 			if up := formatUptime(info.Uptime); up != "" {
 				fmt.Fprintf(a.Out, "    Uptime : %s\n", up)
 			}
+		}
+
+		if certLine != "" {
+			mark := tag(useColor, ansiGreen, "✓", "[ok]")
+			if certProblem {
+				mark = tag(useColor, ansiYellow, "⚠", "[warn]")
+			}
+			fmt.Fprintf(a.Out, "    %s %s\n", mark, certLine)
 		}
 
 		switch {
@@ -2045,4 +2063,46 @@ func (a *App) quickHTTPCheck(domain, service string) (ok bool, code, url, note s
 	default:
 		return false, strconv.Itoa(status), label, ""
 	}
+}
+
+// certificateHealth summarises a service's certificate for the health
+// card: how long it has left, and whether the last `wor ssl sync`
+// succeeded. Returns an empty line for a service with no certificate.
+//
+// This is the detection half of the certificate-copy design. wor serves
+// its own copy of every certificate rather than certbot's originals,
+// which means the copy can go stale if the renewal deploy hook ever
+// fails -- and a stale copy serves an *expired* certificate silently,
+// which is worse than failing loudly. Prevention is the hook; this is
+// what notices when prevention did not happen. On a machine with no
+// renewal schedule at all (see doctor's
+// checkCertificateRenewalSchedule) it is the only thing that notices.
+func (a *App) certificateHealth(ref domainmodel.ServiceRef) (line string, problem bool) {
+	if len(ref.Service.Hosts) == 0 {
+		return "", false
+	}
+	host := ref.Service.Hosts[0]
+	st, ok, _ := ssl.LoadState(a.Cfg.SSL, host)
+	if !ok || !st.Enabled || st.CertFile == "" {
+		return "", false
+	}
+
+	// A failed sync is reported ahead of the expiry date: it is the
+	// cause, and the date on disk is the stale one anyway.
+	if r, ok := ssl.LoadSyncResult(a.Cfg.SSL, host); ok && !r.OK {
+		return fmt.Sprintf("cert %s: last sync failed (%s) -- run: wor ssl sync %s", host, r.Error, host), true
+	}
+
+	notAfter, err := certNotAfter(st.CertFile)
+	if err != nil {
+		return fmt.Sprintf("cert %s: cannot be read (%s)", host, err), true
+	}
+	days := int(time.Until(notAfter).Hours() / 24)
+	switch {
+	case days < 0:
+		return fmt.Sprintf("cert %s: EXPIRED %d day(s) ago", host, -days), true
+	case days < 14:
+		return fmt.Sprintf("cert %s: expires in %d day(s)", host, days), true
+	}
+	return fmt.Sprintf("cert %s: valid for %d more day(s)", host, days), false
 }

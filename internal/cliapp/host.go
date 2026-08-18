@@ -449,15 +449,16 @@ func (a *App) hostAdd(host string, fl flags) (hostWizardResult, error) {
 	}
 
 	siteFile := provider.SiteAvailableFile(host)
-	if err := a.writeHostConfig(provider, host, domain, service, svcType, port, siteFile, nil, ""); err != nil {
-		return hostWizardResult{}, err
-	}
-	enabledFile := provider.SiteEnabledFile(host)
-	if err := provider.EnableHost(siteFile, enabledFile); err != nil {
-		return hostWizardResult{}, err
-	}
+	// Register before applying, and undo the registration if applying
+	// fails. buildWriteParams and the vhost templates read the service
+	// record, so the host has to be known before its config is
+	// generated -- but a host whose config the web server rejects must
+	// not be left behind in services.config.json either.
 	a.Store.AddHostToService(domain, service, host)
-	if err := provider.Reload(); err != nil {
+	if err := a.writeHostConfig(provider, host, domain, service, svcType, port, siteFile, nil, ""); err != nil {
+		if rmErr := a.Store.RemoveHostFromServices(host); rmErr != nil {
+			a.warn("could not unregister %s after the failed host write: %s", host, rmErr)
+		}
 		return hostWizardResult{}, err
 	}
 	a.ok("Host ready: %s -> %s/%s", host, domain, service)
@@ -481,6 +482,7 @@ func (a *App) buildWriteParams(provider *hostprovider.Provider, host, domain, se
 		SiteFile: siteFile, Aliases: aliases, Preferred: preferred,
 		DefaultPublicPath: filepath.Join(a.Cfg.Domains, "default", "web", "public"),
 		DocumentRoot:      docRoot,
+		ACMEWebroot:       a.Cfg.ACME,
 		// The generated vhost includes any *.conf a user drops into
 		// <serviceDir>/.wor/<provider>; see writeCustomConfigScaffold.
 		CustomConfigBaseDir: filepath.Join(serviceDir, ".wor"),
@@ -522,23 +524,73 @@ func (a *App) buildWriteParams(provider *hostprovider.Provider, host, domain, se
 		params.SSLEnabled = st.Enabled
 		params.SSLCertFile = st.CertFile
 		params.SSLKeyFile = st.KeyFile
+		params.ForceHTTPS = a.storedForceHTTPS(st)
 	}
 	return params, nil
 }
 
-// writeHostConfig builds params for host and writes the vhost file, then
-// (best-effort) refreshes the per-service custom-config scaffold the
-// generated vhost includes.
+// writeHostConfig builds params for host and applies them via
+// applyHostParams. Kept as the convenience wrapper for the common case
+// where the caller has no SSL overrides to inject; callers that do
+// build the params themselves and call applyHostParams directly.
 func (a *App) writeHostConfig(provider *hostprovider.Provider, host, domain, service, svcType string, port int, siteFile string, aliases []string, preferred string) error {
 	params, err := a.buildWriteParams(provider, host, domain, service, svcType, port, siteFile, aliases, preferred)
 	if err != nil {
 		return err
 	}
+	return a.applyHostParams(provider, params)
+}
+
+// applyHostParams is the single place wor changes a host's vhost and
+// tells the web server about it. It writes the file, makes sure it is
+// enabled, validates the resulting configuration, and reloads *only*
+// when validation passes. A configuration the server rejects is rolled
+// back and never reloaded.
+//
+// The reason this is one function rather than four call sites doing the
+// steps in their own order: a vhost the web server rejects fails the
+// config test for the entire machine, so reloading anyway takes every
+// site down -- which is exactly how an unreadable Let's Encrypt
+// certificate turned one broken host into a dead server. Validating
+// before applying, and rolling back when validation fails, is the same
+// shape the per-service php-fpm pool code already uses (DESIGN.md
+// section 8), now applied to vhosts too.
+//
+// Enabling happens here for every caller, not just `host add`. On Linux
+// the config test only sees files in sites-enabled, so testing a host
+// that has been written but not yet enabled would validate nothing. The
+// step is idempotent for an already-enabled host, and repairs the case
+// where its sites-enabled entry went missing.
+func (a *App) applyHostParams(provider *hostprovider.Provider, params hostprovider.WriteParams) error {
+	snapshot := provider.SnapshotHostConfig(params.Host)
+
 	if err := provider.WriteConfig(params); err != nil {
 		return err
 	}
 	a.writeCustomConfigScaffold(provider, params)
-	return nil
+
+	if err := provider.EnableHost(params.SiteFile, provider.SiteEnabledFile(params.Host)); err != nil {
+		a.rollbackHostConfig(provider, snapshot)
+		return err
+	}
+
+	if err := provider.Test(); err != nil {
+		a.rollbackHostConfig(provider, snapshot)
+		return a.errf("%s rejected the configuration for %s, so it was not reloaded and the previous config was restored: %w", provider.Name, params.Host, err)
+	}
+
+	return provider.Reload()
+}
+
+// rollbackHostConfig restores snapshot, downgrading a failed restore to
+// a warning: the caller is already returning an error, and the useful
+// thing at that point is to tell the operator the file on disk is not
+// what it was, rather than to replace one error with another.
+func (a *App) rollbackHostConfig(provider *hostprovider.Provider, snapshot hostprovider.HostConfigSnapshot) {
+	if err := provider.RestoreHostConfig(snapshot); err != nil {
+		a.warn("could not roll back the host config for %s: %s", snapshot.Host, err)
+		a.warn("the configuration on disk is invalid -- fix it before the next %s reload, or every site on this machine will stay down", provider.Name)
+	}
 }
 
 func (a *App) hostRemove(host string, fl flags) error {

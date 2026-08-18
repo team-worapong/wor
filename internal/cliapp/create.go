@@ -280,9 +280,6 @@ func (a *App) cmdCreate(args []string) error {
 			if err := a.writeHostConfig(provider, host, domain, service, svcType, port, siteFile, []string{aliasHost}, preferredHost); err != nil {
 				return err
 			}
-			if err := provider.Reload(); err != nil {
-				return err
-			}
 			aliasAdded = true
 			a.ok("Host alias ready: %s -> %s/%s", aliasHost, domain, service)
 		}
