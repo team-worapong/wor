@@ -1,6 +1,6 @@
 <?php
 // WOR Host — landing page
-$latestVersion = 'v1.0.1-b55';
+$latestVersion = 'v1.0.1-b57';
 
 // Sortable key: v1.0.0-b32 -> [1,0,0,32]; final releases outrank betas.
 function versionKey(string $tag): array {
