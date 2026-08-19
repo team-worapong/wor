@@ -30,6 +30,8 @@ backups/
 # Only the large built release archives it serves are kept out.
 /public/download/releases/
 public/download/releases/
+/public/download/hcp/releases/
+public/download/hcp/releases/
 
 AGENTS.md
 

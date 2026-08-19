@@ -1,0 +1,8 @@
+943f168cdd4ac46039080d7cc799f69814035e81a029c48271a79e83cec12515  ./wor-hcp-v0.1.0-darwin-amd64.tar.gz
+99c920e984c4e7adb63ebcc99182f9d483bfee2dc12d4597e1bd601b0a422c51  ./wor-hcp-v0.1.0-darwin-arm64.tar.gz
+7171dd3ab101da6db0136e249792d614cc6fa97bb36d0f02fabfed3227792328  ./wor-hcp-v0.1.0-linux-amd64.tar.gz
+568b23ea91c0be022fa56afcd9c22b7b5d49c3372b3447506b34fdbef7bcba36  ./wor-hcp-v0.1.0-linux-arm64.tar.gz
+e95a96fbb154bd71aa80a9bacbea40d4119d215474661fc73b6093877b5ccb16  ./wor-hcp-v0.1.0-darwin-amd64.zip
+0dd376fffaeb35d22857d5e90f1deeb91b3aeb82369a3197a1d0e3e1bc1670f2  ./wor-hcp-v0.1.0-darwin-arm64.zip
+1f3fd197702add402a1a4a64167f2197296c156a976d0e5378ea06dfe4385a69  ./wor-hcp-v0.1.0-linux-amd64.zip
+e3082629fedc40d003283318b64d63509fb3dd81523667416dc603c5b42e3c5c  ./wor-hcp-v0.1.0-linux-arm64.zip
