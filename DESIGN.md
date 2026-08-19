@@ -688,7 +688,7 @@ means reaching into a directory another tool owns.
 
 ### `wor ssl sync`
 
-One new subcommand does three jobs: it is what certbot's deploy hook
+One new subcommand does three jobs: it is what certbot's renewal hook
 calls after each renewal, how a host issued before this change is
 migrated, and the manual repair when the copy and the source have
 drifted. It is idempotent -- an unchanged certificate produces no write
@@ -716,6 +716,36 @@ own, and the per-OS default WOR_HOME (`$HOME/wor` on macOS) resolves to
 root's home rather than the operator's, so the hook would sync into the
 wrong workspace.
 
+### The hook must never run while wor holds the lock
+
+The hook is a second `wor` process, and it needs the `$WOR_HOME` lock
+(section on `internal/worlock`) for the state it writes. Whenever the
+`wor` process that started certbot is still holding that lock, the hook
+cannot get it -- non-blocking by design -- and fails. Certbot reports
+`Hook 'deploy-hook' reported error code 1` and carries on, so nothing
+breaks, but the operator is shown a scary failure on a run that
+succeeded, and the sync the hook was supposed to do never happened.
+
+Rather than making the lock re-entrant across processes (a token in the
+lock file, or passing a marker through `sudo`'s stripped environment --
+both invisible machinery that fails in ways nobody would guess), the
+rule is simply that **wor never nests itself**:
+
+- **Issuance** registers the hook with `--renew-hook`, not
+  `--deploy-hook`. Both store the same `renew_hook` line in the renewal
+  config; only `--deploy-hook` also runs it immediately. That immediate
+  run is redundant anyway -- `wor ssl issue` copies the fresh
+  certificate itself, in-process, one step later -- so dropping it costs
+  nothing and removes the collision entirely.
+- **`wor ssl renew`** does not take the lock at all. It writes nothing
+  under WOR_HOME itself; it runs `certbot renew` and lets the hook do
+  the writing, and the hook takes the lock in its own process. This is
+  the one ssl action excluded; every other one writes state directly and
+  keeps the lock.
+
+An unattended renewal -- the case the hook exists for -- is unaffected:
+no other wor process is running, so the lock is free.
+
 ### Issuance moved to `--webroot`
 
 certbot's `--nginx`/`--apache` plugins work by editing the vhost, which
@@ -738,12 +768,12 @@ that location before the challenge arrives.
 
 ### Detection, because prevention is not enough
 
-Copying introduces one risk the old design did not have: if the deploy
+Copying introduces one risk the old design did not have: if the renewal
 hook ever fails, the copy goes stale and the site serves an **expired**
 certificate silently, which is worse than failing loudly. Three layers
 answer that:
 
-- the deploy hook (prevention);
+- the renewal hook (prevention);
 - `wor health` reports certificate expiry as its yellow Warning tier,
   so the exit code stays 0 and cron does not alarm on something days
   away (detection of the outcome);
@@ -771,19 +801,18 @@ report the gap, offer the command, never install it silently.
 - **The SSL rework (sections 19-21) has not been run against a real
   certificate authority yet.** It builds, vets and tests clean on every
   target, and the generated configs are covered by rendering tests, but
-  the end-to-end path -- `certbot --webroot`, the deploy hook firing on
-  a real renewal, `wor ssl sync` running as root from that hook -- has
-  not been exercised. On the machine it was written for, port 80 was
-  not reachable from the internet at the time (dynamic DNS switched
-  off), so even `certbot --dry-run` could not complete. Verify with a
-  dry run before trusting it in production.
+  the end-to-end path -- the renewal hook firing on a real renewal and
+  `wor ssl sync` running as root from that hook -- has not been
+  exercised. `certbot --webroot` itself has now issued a real
+  certificate. Verify the renewal path with a dry run before trusting
+  it in production.
 - The two existing Let's Encrypt hosts on that machine
   (`team.ddns.net`, `team-pma.ddns.net`) still record
   `authenticator = nginx` in their renewal configs. `wor ssl sync`
   migrates the certificate copy, but moving them onto webroot needs a
   reissue -- and certbot only rewrites a renewal config when it
   actually obtains a certificate, so `wor ssl issue` warns when the
-  deploy hook did not end up registered.
+  renewal hook did not end up registered.
 - `Preferred` (which of a host's names is canonical) is still not
   persisted anywhere: it is passed on the command line and lost on the
   next regeneration. Pre-existing, but sections 19-21 regenerate vhosts

@@ -27,6 +27,16 @@ func TestCommandNeedsLock(t *testing.T) {
 		{"doctor", nil, true},
 		{"diagnose", []string{"shop.test"}, false},
 		{"health", nil, false},
+		// `ssl renew` hands control to `certbot renew`, which runs
+		// `wor ssl sync` as its renewal hook -- a second wor process
+		// that needs this same lock. Locking here would deadlock wor
+		// against its own hook. Every other ssl action writes state
+		// and must keep the lock.
+		{"ssl", []string{"renew", "shop.test"}, false},
+		{"ssl", []string{"issue", "shop.test"}, true},
+		{"ssl", []string{"sync", "shop.test"}, true},
+		{"ssl", []string{"remove", "shop.test"}, true},
+		{"ssl", nil, true},
 	}
 	for _, c := range cases {
 		got := commandNeedsLock(c.cmd, c.rest)

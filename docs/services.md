@@ -132,5 +132,5 @@ Let's Encrypt certificates are copied here from certbot's store rather
 than referenced in place, because /etc/letsencrypt/archive is root-only
 and an unprivileged master -- Homebrew's nginx on macOS -- cannot read
 it at all. `wor ssl sync <host>` refreshes the copy and runs
-automatically as certbot's deploy hook. See docs/commands.md and
+automatically as certbot's renewal hook. See docs/commands.md and
 DESIGN.md section 21.

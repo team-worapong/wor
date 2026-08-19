@@ -46,7 +46,7 @@ conflict, `usage.go`/the actual code behavior wins).
   certificates with no renewal schedule** anywhere on the machine (no
   systemd timer, launchd job or cron entry). Debian's certbot package
   installs a timer, Homebrew's does not -- without one nothing renews
-  anything and the deploy hook never fires. wor reports the gap and
+  anything and the renewal hook never fires. wor reports the gap and
   shows the command to check it, but never installs a schedule on its
   own.
 - `wor env` -- show the current config/environment values
@@ -382,8 +382,14 @@ host has a certificate yet, and the redirect above never captures that
 path. certbot's `--nginx`/`--apache` plugins are no longer used: they
 edit the vhost, which wor regenerates from templates on every write.
 
-`wor ssl issue` registers a certbot deploy hook so each renewal refreshes
-wor's copy automatically. `wor ssl sync <host>` is that same refresh, run
+`wor ssl issue` registers a certbot renewal hook so each renewal refreshes
+wor's copy automatically. The hook is registered with `--renew-hook`, so
+certbot stores it but does not run it during the issuance itself -- `wor
+ssl issue` already copies the new certificate in-process, and a hook
+firing there would be a second `wor` asking for a lock the first one is
+still holding. For the same reason `wor ssl renew` is the one ssl action
+that does not take that lock: it writes nothing itself and leaves the
+writing to the hook. `wor ssl sync <host>` is that same refresh, run
 by hand -- use it to migrate a host issued before wor kept its own copy,
 or to repair a copy that has drifted. It does nothing (and does not
 reload) when the certificate has not actually changed.
@@ -400,7 +406,7 @@ Two things to know about renewal:
   certificate expiry as a warning, so this surfaces before it bites.
 
 `wor ssl sync` is the only subcommand allowed to run under `sudo`,
-because certbot runs deploy hooks as root. It writes just the two
+because certbot runs renewal hooks as root. It writes just the two
 certificate files and hands them back to the operator.
 
 ## Info

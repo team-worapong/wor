@@ -113,9 +113,9 @@ func TestPositionalArgSkipsFlags(t *testing.T) {
 // The renewal hook runs as root, where "~" is root's home and the
 // operator's ~/.wor/config is invisible -- so WOR_HOME has to travel
 // with the command or the hook syncs into the wrong workspace.
-func TestDeployHookCarriesWorHomeAndAnAbsoluteBinary(t *testing.T) {
+func TestRenewHookCarriesWorHomeAndAnAbsoluteBinary(t *testing.T) {
 	app := &App{Cfg: &config.Config{WorHome: "/Users/someone/wor"}, Err: io.Discard}
-	hook := app.deployHookCommand("app.example.com")
+	hook := app.renewHookCommand("app.example.com")
 	if hook == "" {
 		t.Fatal("hook should have been built")
 	}
@@ -136,14 +136,16 @@ func TestDeployHookCarriesWorHomeAndAnAbsoluteBinary(t *testing.T) {
 // token is an executable on PATH. A hook that began with the
 // environment assignment itself ("WOR_HOME=... wor ssl sync ...") made
 // that token "WOR_HOME=/opt/wor", so certbot aborted every issuance
-// with "Unable to find deploy-hook command ... in the PATH" before it
-// ever contacted the ACME server. Passing the variable through env(1)
-// keeps a real command name in front. This asserts the property certbot
-// actually checks rather than the exact string, so a later rewrite of
-// the hook cannot reintroduce the failure.
-func TestDeployHookStartsWithACommandNameCertbotCanFind(t *testing.T) {
+// with "Unable to find renew-hook command ... in the PATH" before it
+// ever contacted the ACME server. That check runs when the flag is
+// parsed, so it still applies now that the hook is registered rather
+// than run. Passing the variable through env(1) keeps a real command
+// name in front. This asserts the property certbot actually checks
+// rather than the exact string, so a later rewrite of the hook cannot
+// reintroduce the failure.
+func TestRenewHookStartsWithACommandNameCertbotCanFind(t *testing.T) {
 	app := &App{Cfg: &config.Config{WorHome: "/opt/wor"}, Err: io.Discard}
-	hook := app.deployHookCommand("app.example.com")
+	hook := app.renewHookCommand("app.example.com")
 	if hook == "" {
 		t.Fatal("hook should have been built")
 	}

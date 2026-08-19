@@ -18,7 +18,22 @@ func letsEncryptRenewalConf(host string) string {
 
 // IssueLetsEncrypt obtains a certificate with certbot's webroot
 // authenticator, writing challenges into webroot and registering
-// deployHook so every later renewal refreshes wor's own copy.
+// renewHook so every later renewal refreshes wor's own copy.
+//
+// The hook is registered with --renew-hook, not --deploy-hook. The two
+// store the same renew_hook line in the renewal config; --deploy-hook
+// additionally runs it once, right now, as part of this issuance. That
+// extra run is both redundant and self-defeating here: redundant
+// because the caller copies the fresh certificate itself on the very
+// next line, and self-defeating because the hook is `wor ssl sync`,
+// which is a second wor process asking for the $WOR_HOME lock the wor
+// process that started certbot is still holding (see internal/worlock).
+// It cannot get it, so certbot reports "Hook 'deploy-hook' reported
+// error code 1" on every single issuance -- a failure that looks
+// alarming, is printed at the exact moment an operator is watching, and
+// means nothing. With --renew-hook the hook is stored and fires only
+// where it is actually needed: an unattended renewal, where no other
+// wor process is running and the lock is free.
 //
 // It used to use certbot's --nginx/--apache plugins. Those work by
 // editing the vhost, which wor regenerates from templates on every
@@ -37,7 +52,7 @@ func letsEncryptRenewalConf(host string) string {
 //
 // certbot has no official native Windows support, so this returns a
 // clear error there rather than attempting something unreliable.
-func IssueLetsEncrypt(primaryHost string, aliases []string, webroot, deployHook string) error {
+func IssueLetsEncrypt(primaryHost string, aliases []string, webroot, renewHook string) error {
 	if osutil.IsWindows() {
 		return fmt.Errorf("Let's Encrypt via certbot is not supported on Windows; use --provider=self-signed or --provider=custom")
 	}
@@ -52,8 +67,8 @@ func IssueLetsEncrypt(primaryHost string, aliases []string, webroot, deployHook 
 	for _, d := range append([]string{primaryHost}, aliases...) {
 		args = append(args, "-d", d)
 	}
-	if deployHook != "" {
-		args = append(args, "--deploy-hook", deployHook)
+	if renewHook != "" {
+		args = append(args, "--renew-hook", renewHook)
 	}
 
 	if pathExistsAny(letsEncryptRenewalConf(primaryHost)) || pathExistsAny(LetsEncryptCertDir(primaryHost)) {
@@ -81,7 +96,7 @@ func IssueLetsEncrypt(primaryHost string, aliases []string, webroot, deployHook 
 // explain: DNS not pointing at this machine, port 80 unreachable, a
 // challenge answered by the wrong vhost, a rejected hook. Discarding
 // what it said turns a one-line diagnosis into a log hunt -- it cost
-// four identical failed runs to find a rejected --deploy-hook that
+// four identical failed runs to find a rejected renewal hook that
 // certbot had named in full on the very first one.
 //
 // The streams go to os.Stdout/os.Stderr rather than through App's
@@ -97,11 +112,15 @@ func runCertbot(cmd *exec.Cmd) error {
 	return cmd.Run()
 }
 
-// RenewalConfHasDeployHook reports whether host's renewal config already
-// runs a deploy hook. Used to tell an operator that a host predating
-// this change will not refresh wor's copy on its own until it is
-// reissued.
-func RenewalConfHasDeployHook(host string) (bool, error) {
+// RenewalConfHasRenewHook reports whether host's renewal config already
+// runs a hook when the certificate is renewed. Used to tell an operator
+// that a host predating this change will not refresh wor's copy on its
+// own until it is reissued.
+//
+// Both spellings are accepted: certbot stores the hook as renew_hook
+// whichever flag registered it, but a config written by an older
+// certbot (or by hand) can carry deploy_hook instead.
+func RenewalConfHasRenewHook(host string) (bool, error) {
 	data, err := osutil.ReadFilePrivileged(letsEncryptRenewalConf(host))
 	if err != nil {
 		return false, err

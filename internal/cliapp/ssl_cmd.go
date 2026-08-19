@@ -103,7 +103,7 @@ func (a *App) cmdSSL(args []string) error {
 			if err := a.rewriteHostConfigWithSSL(primary, domain, service, svcType, aliases, preferred); err != nil {
 				return fmt.Errorf("could not prepare %s to answer the ACME challenge: %w", primary, err)
 			}
-			if err := ssl.IssueLetsEncrypt(primary, aliases, a.Cfg.ACME, a.deployHookCommand(primary)); err != nil {
+			if err := ssl.IssueLetsEncrypt(primary, aliases, a.Cfg.ACME, a.renewHookCommand(primary)); err != nil {
 				return err
 			}
 			// The vhost points at wor's own copy, not certbot's store:
@@ -386,7 +386,11 @@ func (a *App) certificateOwner() (uid, gid int, err error) {
 		a.Cfg.WorHome, a.Cfg.WorHome)
 }
 
-// deployHookCommand is the command certbot re-runs after each renewal.
+// renewHookCommand is the command certbot runs after each renewal. It
+// is registered with --renew-hook, so certbot stores it but does not
+// run it during the issuance wor itself drives -- see
+// ssl.IssueLetsEncrypt for why running it there deadlocks wor against
+// its own $WOR_HOME lock.
 //
 // Two things in it are easy to get wrong and both fail silently months
 // later, which is why they are spelled out rather than left to the
@@ -409,8 +413,10 @@ func (a *App) certificateOwner() (uid, gid int, err error) {
 // whole command unless that token is an executable on PATH
 // (certbot/_internal/hooks.py). A bare assignment makes that first
 // token "WOR_HOME=/opt/wor", so certbot aborts the entire issuance with
-// "Unable to find deploy-hook command WOR_HOME=... in the PATH" before
-// it ever contacts the ACME server. Running the hook through a shell --
+// "Unable to find renew-hook command WOR_HOME=... in the PATH" before
+// it ever contacts the ACME server. (That validation happens when the
+// flag is parsed, so it still applies even though the hook itself no
+// longer runs at issuance time.) Running the hook through a shell --
 // which certbot does -- would have handled the prefix fine; the check
 // that rejects it happens earlier, and does not. env(1) is POSIX, is on
 // PATH everywhere wor supports, and sets the variable for exactly one
@@ -421,7 +427,7 @@ func (a *App) certificateOwner() (uid, gid int, err error) {
 // (the host has no state there, so sync errors out) and silently for a
 // moved binary. The expiry warning in `wor health` is the net under
 // both.
-func (a *App) deployHookCommand(host string) string {
+func (a *App) renewHookCommand(host string) string {
 	self, err := os.Executable()
 	if err != nil || self == "" {
 		a.warn("could not resolve wor's own path; the renewal hook for %s will not be registered", host)
@@ -450,11 +456,11 @@ func shellQuote(s string) string {
 // refreshing wor's copy, which is precisely the failure this design is
 // built to avoid. Better to say so than to assume.
 func (a *App) warnIfRenewalHookMissing(host string) {
-	present, err := ssl.RenewalConfHasDeployHook(host)
+	present, err := ssl.RenewalConfHasRenewHook(host)
 	if err != nil || present {
 		return
 	}
-	a.warn("certbot's renewal config for %s has no deploy hook, so renewals will not refresh wor's copy of the certificate.", host)
+	a.warn("certbot's renewal config for %s has no renewal hook, so renewals will not refresh wor's copy of the certificate.", host)
 	a.info("This happens when the existing certificate was still valid and certbot kept it rather than reissuing.")
 	a.info("Run `wor ssl sync %s` after each renewal, or force a reissue to register the hook.", host)
 }

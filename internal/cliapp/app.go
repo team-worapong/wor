@@ -202,7 +202,7 @@ func allowsSudoElevation(cmd string, rest []string) bool {
 // writes services.config.json/databases.config.json/the PM2 ecosystem
 // file/vhost configs/etc., and misclassifying one of those as
 // lock-free would silently reopen the exact race this lock exists to
-// close. Only four kinds of commands are excluded:
+// close. Only five kinds of commands are excluded:
 //   - version/help: never touch WOR_HOME at all.
 //   - path/shell-init: strictly read-only shell-integration plumbing.
 //     Both are run implicitly and often -- shell-init on every new
@@ -213,6 +213,17 @@ func allowsSudoElevation(cmd string, rest []string) bool {
 //     (pm2 logs, journalctl -f, ...), so holding an exclusive lock for
 //     their whole runtime would block every other wor command on the
 //     host for as long as someone is watching logs.
+//   - `ssl renew`: it writes nothing under WOR_HOME itself -- all it
+//     does is run `certbot renew`, and certbot fires wor's own renewal
+//     hook (`wor ssl sync <host>`) in a separate process for each
+//     certificate it actually renews. That child needs this same lock
+//     for the state it writes, and takes it itself. Holding the lock
+//     here would deadlock wor against its own hook: the parent waits
+//     for certbot, which waits for a hook that can never have the lock
+//     the parent is still holding. Issuance does not need the same
+//     exclusion -- it writes plenty of state, so it keeps the lock, and
+//     its hook is registered with --renew-hook precisely so that it
+//     does not run while wor holds it (see ssl.IssueLetsEncrypt).
 //   - diagnose/health: strictly read-only (they never write anything --
 //     see docs/diagnose.md), and every config file they read is written
 //     atomically (osutil.WriteFileAtomic) so a concurrent writer can't
@@ -225,6 +236,10 @@ func commandNeedsLock(cmd string, rest []string) bool {
 		return false
 	case "service", "host":
 		if len(rest) > 0 && rest[0] == "logs" {
+			return false
+		}
+	case "ssl":
+		if len(rest) > 0 && rest[0] == "renew" {
 			return false
 		}
 	}
