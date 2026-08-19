@@ -125,9 +125,34 @@ func TestDeployHookCarriesWorHomeAndAnAbsoluteBinary(t *testing.T) {
 	if !strings.HasSuffix(hook, " ssl sync app.example.com") {
 		t.Errorf("hook must end with the sync subcommand: %s", hook)
 	}
-	binary := strings.TrimSuffix(strings.SplitN(hook, " ", 2)[1], " ssl sync app.example.com")
+	binary := strings.TrimSuffix(strings.SplitN(hook, " ", 3)[2], " ssl sync app.example.com")
 	if !strings.HasPrefix(binary, "'/") {
 		t.Errorf("the binary path must be absolute and quoted: %s", hook)
+	}
+}
+
+// certbot validates a hook before it runs it: it takes the first
+// whitespace-separated token and refuses the whole command unless that
+// token is an executable on PATH. A hook that began with the
+// environment assignment itself ("WOR_HOME=... wor ssl sync ...") made
+// that token "WOR_HOME=/opt/wor", so certbot aborted every issuance
+// with "Unable to find deploy-hook command ... in the PATH" before it
+// ever contacted the ACME server. Passing the variable through env(1)
+// keeps a real command name in front. This asserts the property certbot
+// actually checks rather than the exact string, so a later rewrite of
+// the hook cannot reintroduce the failure.
+func TestDeployHookStartsWithACommandNameCertbotCanFind(t *testing.T) {
+	app := &App{Cfg: &config.Config{WorHome: "/opt/wor"}, Err: io.Discard}
+	hook := app.deployHookCommand("app.example.com")
+	if hook == "" {
+		t.Fatal("hook should have been built")
+	}
+	first := strings.SplitN(hook, " ", 2)[0]
+	if strings.ContainsAny(first, "='\"") {
+		t.Errorf("certbot rejects a hook whose first token is not a plain command name, got %q: %s", first, hook)
+	}
+	if first != "env" {
+		t.Errorf("first token = %q, want \"env\": %s", first, hook)
 	}
 }
 

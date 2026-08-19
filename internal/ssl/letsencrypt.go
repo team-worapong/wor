@@ -3,6 +3,7 @@ package ssl
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"wor/internal/osutil"
@@ -67,6 +68,32 @@ func IssueLetsEncrypt(primaryHost string, aliases []string, webroot, deployHook 
 	if err != nil {
 		return err
 	}
+	return runCertbot(cmd)
+}
+
+// runCertbot runs cmd with certbot's output going to the operator's
+// terminal, and returns only its exit status.
+//
+// Without this, exec.Cmd discards both streams and every certbot
+// failure reaches the operator as the bare string "exit status 1" --
+// no domain, no challenge result, no reason. certbot is the one command
+// wor shells out to that regularly fails for reasons only it can
+// explain: DNS not pointing at this machine, port 80 unreachable, a
+// challenge answered by the wrong vhost, a rejected hook. Discarding
+// what it said turns a one-line diagnosis into a log hunt -- it cost
+// four identical failed runs to find a rejected --deploy-hook that
+// certbot had named in full on the very first one.
+//
+// The streams go to os.Stdout/os.Stderr rather than through App's
+// writers because this package has no App, and because certbot's output
+// is a live progress stream the operator watches rather than something
+// wor formats or captures. Stdin is deliberately left unattached:
+// certbot is always invoked here with an explicit authenticator and an
+// existing account, so it has nothing to ask, and a closed stdin keeps
+// an unattended renewal from blocking on a prompt nobody will answer.
+func runCertbot(cmd *exec.Cmd) error {
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
@@ -94,7 +121,7 @@ func RenewLetsEncrypt() error {
 	if err != nil {
 		return err
 	}
-	return cmd.Run()
+	return runCertbot(cmd)
 }
 
 func pathExistsAny(p string) bool {

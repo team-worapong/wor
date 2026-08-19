@@ -401,8 +401,20 @@ func (a *App) certificateOwner() (uid, gid int, err error) {
 // per-OS default -- as root, "~" is root's home, so the config file the
 // operator wrote is invisible and the default (on macOS, $HOME/wor)
 // resolves to root's own directory instead of theirs. The hook would
-// quietly sync into the wrong workspace. certbot executes hooks through
-// a shell, so an environment prefix is enough.
+// quietly sync into the wrong workspace.
+//
+// It is passed via env(1) rather than as a bare "WOR_HOME=... wor ..."
+// prefix, because certbot validates a hook before it runs it: it takes
+// the first whitespace-separated token of the string and refuses the
+// whole command unless that token is an executable on PATH
+// (certbot/_internal/hooks.py). A bare assignment makes that first
+// token "WOR_HOME=/opt/wor", so certbot aborts the entire issuance with
+// "Unable to find deploy-hook command WOR_HOME=... in the PATH" before
+// it ever contacts the ACME server. Running the hook through a shell --
+// which certbot does -- would have handled the prefix fine; the check
+// that rejects it happens earlier, and does not. env(1) is POSIX, is on
+// PATH everywhere wor supports, and sets the variable for exactly one
+// command without a subshell.
 //
 // If the binary is moved or WOR_HOME changes after this is registered,
 // the hook stops doing anything useful -- loudly for a moved WOR_HOME
@@ -418,7 +430,7 @@ func (a *App) deployHookCommand(host string) string {
 	if resolved, err := filepath.EvalSymlinks(self); err == nil {
 		self = resolved
 	}
-	return fmt.Sprintf("WOR_HOME=%s %s ssl sync %s", shellQuote(a.Cfg.WorHome), shellQuote(self), host)
+	return fmt.Sprintf("env WOR_HOME=%s %s ssl sync %s", shellQuote(a.Cfg.WorHome), shellQuote(self), host)
 }
 
 // shellQuote wraps s in single quotes so a path with spaces survives
