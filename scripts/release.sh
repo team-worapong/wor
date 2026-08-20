@@ -70,31 +70,37 @@
 # from dist/releases/ so packaged archives never collide with the loose
 # binaries they're built from.
 #
-# Publishing (unless --no-publish): the three files above are then copied
-# into public/download/releases/, which is what the download site serves.
+# Publishing (unless --no-publish): the three files above are copied into
+# public/download/releases/, which is what the download site serves.
 # Nothing there is ever deleted -- every published version stays
 # downloadable, so the copy only ever adds files or overwrites the ones
-# belonging to the tag being released. Two extra things happen so the
-# site actually reflects the new release:
+# belonging to the tag being released. Every file goes in through a
+# temporary name and is renamed into place, so a 29 MB archive is never
+# visible half-written.
 #
-#   - latest.tar.gz is refreshed from this release's tar.gz. It is a real
-#     copy rather than a symlink because it has to survive being moved
-#     around by whatever copies public/ to the web host, and not every
-#     such tool follows symlinks.
-#   - the $latestVersion fallback in public/index.php is rewritten to this
-#     release's tag. That page already derives the tag by scanning
-#     public/download/releases/ at request time; the literal is only used
-#     when that directory is empty or absent, and keeping it current means
-#     that fallback is never a stale version number.
+# Then two things make the new release live:
+#
+#   - any leftover latest.tar.gz is deleted. That URL is retired: it was a
+#     stable name whose bytes changed every release, which behind
+#     Cloudflare (where .gz is cached by default) meant the edge served
+#     the previous build. Nothing points at it any more -- README.md and
+#     the download page both go through installer.sh.
+#   - public/lib/release-tag.php is regenerated with this release's tag,
+#     version and build. **This is written last and it is what makes the
+#     release live**: public/download/version.php serves whichever tag is
+#     named there, so until this file changes the site still points at the
+#     previous release. The installer asks version.php first and then
+#     downloads the versioned archive it names -- a URL that never repeats
+#     and so is safe for the edge to cache forever.
 #
 # public/download/index.php needs no such step -- it builds the whole
 # download listing from whatever is in public/download/releases/ at
 # request time.
 #
 # public/download/releases/ is gitignored (see .gitignore), so publishing
-# does not commit archives into the repo. Only the public/index.php edit
-# shows up in `git status`, which is intentional: it is a one-line record
-# of which release the site was last pointed at.
+# does not commit archives into the repo. Only the release-tag.php change
+# shows up in `git status`, which is intentional: it is the record of
+# which release the site was last pointed at.
 #
 # Can be run from any directory; it resolves and cd's into the repo
 # root first.
@@ -159,10 +165,10 @@ done
 # The character set is restricted rather than just rejecting '/' because
 # output-name ends up in three places where a stray metacharacter would do
 # something other than name a file: an archive filename, a URL path on the
-# download site, and the sed replacement that rewrites $latestVersion in
-# public/index.php (where '&' and '\' have their own meanings). Release
-# tags only ever use these characters -- v1.0.0-b31 and the like -- so
-# nothing that was previously valid is being turned away.
+# download site, and a single-quoted PHP string literal in the generated
+# public/lib/release-tag.php (where a quote or a backslash would end or
+# escape the literal). Release tags only ever use these characters --
+# v1.0.0-b31 and the like -- so nothing previously valid is turned away.
 case "$OUTPUT_NAME" in
   "") ;;
   *[!A-Za-z0-9._-]*)
@@ -314,61 +320,87 @@ if [ "$PUBLISH" -eq 0 ]; then
 fi
 
 PUBLIC_RELEASES_DIR="$ROOT_DIR/public/download/releases"
-LANDING_PAGE="$ROOT_DIR/public/index.php"
+RELEASE_TAG_FILE="$ROOT_DIR/public/lib/release-tag.php"
 
 # Checked before anything is copied so a repo whose public/ tree has been
 # moved or renamed fails with one clear message, instead of half-publishing
-# and then failing on the rewrite below.
-if [ ! -f "$LANDING_PAGE" ]; then
-  echo "ERROR: expected the landing page at $LANDING_PAGE, but it is not there." >&2
+# and then failing on the write below.
+if [ ! -d "$ROOT_DIR/public/lib" ]; then
+  echo "ERROR: expected the download site at $ROOT_DIR/public, but public/lib is not there." >&2
   echo "(release.sh publishes into public/ -- pass --no-publish if this checkout has no download site.)" >&2
-  exit 1
-fi
-
-# The $latestVersion literal is a single-quoted PHP assignment on its own
-# line near the top of public/index.php. Match it exactly and bail out if
-# it is not found, rather than silently publishing archives while leaving
-# the page advertising an older tag.
-LATEST_VERSION_RE="^\\\$latestVersion = '[^']*';\$"
-if ! grep -qE "$LATEST_VERSION_RE" "$LANDING_PAGE"; then
-  echo "ERROR: could not find the \$latestVersion fallback line in $LANDING_PAGE." >&2
-  echo "(expected a line of exactly: \$latestVersion = '<tag>';  -- has the file been restructured?)" >&2
   exit 1
 fi
 
 echo
 echo "==> Publishing to public/download/releases"
 mkdir -p "$PUBLIC_RELEASES_DIR"
-cp "$ZIP_PATH"   "$PUBLIC_RELEASES_DIR/$ZIP_NAME"
-cp "$TARGZ_PATH" "$PUBLIC_RELEASES_DIR/$TARGZ_NAME"
-cp "$SHA_PATH"   "$PUBLIC_RELEASES_DIR/$SHA_NAME"
-echo "    $ZIP_NAME"
-echo "    $TARGZ_NAME"
-echo "    $SHA_NAME"
 
-# latest.tar.gz is the file public/download/installer.sh fetches when it is
-# run without a version argument -- i.e. the `curl ... | bash` one-liner
-# the download page recommends -- and it is what that page's "latest"
-# card links to. Copy to a temporary name in the same directory and then
-# rename it into place: a rename within one filesystem is atomic, so a
-# visitor downloading latest.tar.gz while a release is being published
-# gets either the whole previous file or the whole new one, never a
-# half-written archive.
-cp "$TARGZ_PATH" "$PUBLIC_RELEASES_DIR/latest.tar.gz.tmp"
-mv -f "$PUBLIC_RELEASES_DIR/latest.tar.gz.tmp" "$PUBLIC_RELEASES_DIR/latest.tar.gz"
-echo "    latest.tar.gz (copy of $TARGZ_NAME)"
+# Every file goes in through a temporary name and is then renamed into
+# place. A rename within one filesystem is atomic, so nothing in this
+# directory is ever visible half-written -- which matters now that
+# download/version.php decides what "latest" means by scanning here. A
+# plain `cp` of a 29 MB tarball is a window several seconds wide in
+# which a visitor can be handed a truncated archive.
+publish() {
+  local src="$1" name="$2"
+  cp "$src" "$PUBLIC_RELEASES_DIR/$name.tmp"
+  mv -f "$PUBLIC_RELEASES_DIR/$name.tmp" "$PUBLIC_RELEASES_DIR/$name"
+  echo "    $name"
+}
 
-# sed -i takes an argument on BSD/macOS and does not on GNU/Linux, so
-# there is no spelling of it that works on both. Write to a temporary
-# file and rename instead, which also means an interrupted run cannot
-# leave a truncated index.php behind.
-sed -E "s/$LATEST_VERSION_RE/\$latestVersion = '$OUTPUT_NAME';/" \
-  "$LANDING_PAGE" > "$LANDING_PAGE.tmp"
-mv -f "$LANDING_PAGE.tmp" "$LANDING_PAGE"
+publish "$ZIP_PATH"   "$ZIP_NAME"
+publish "$TARGZ_PATH" "$TARGZ_NAME"
+# Last, deliberately. version.php treats a tag as published only once its
+# .sha256 is present, so writing this file is what makes the release
+# visible as "latest" -- and by then its archives are already complete.
+publish "$SHA_PATH"   "$SHA_NAME"
+
+# latest.tar.gz is retired, and removed here if an older release left one
+# behind. It was the URL that made this whole split necessary: a stable
+# name whose bytes change every release, served through Cloudflare where
+# `.gz` is cached by default, so the edge went on handing out the
+# previous build.
+#
+# Deleted rather than left in place, which is the one exception to "this
+# directory is append-only" above. Left alone it would sit there frozen
+# at whichever release last wrote it, and anyone still using that URL
+# would keep installing that build forever without a hint that anything
+# was wrong. A 404 says "this URL is gone, go look at the download page"
+# on the first try.
+if [ -f "$PUBLIC_RELEASES_DIR/latest.tar.gz" ]; then
+  rm -f "$PUBLIC_RELEASES_DIR/latest.tar.gz"
+  echo "    removed latest.tar.gz (retired; installs resolve via version.php)"
+fi
+
+# Written last, after every archive is in place, and this is the step
+# that makes the release live: download/version.php serves whatever tag
+# is named here, so until this file changes the site still points at the
+# previous release. Publishing therefore has a single commit point
+# rather than a window in which the site advertises a release whose
+# 29 MB archive is still being copied.
+#
+# Generated rather than hand-edited because release.sh already knows the
+# exact version and build it just packaged -- there is nothing for the
+# site to work out. It replaces an older sed that patched a $latestVersion
+# literal inside public/index.php, which meant one fragile regex against
+# a 38 KB page every release.
+cat > "$RELEASE_TAG_FILE.tmp" <<EOF
+<?php
+// Generated by scripts/release.sh on each publish -- do not edit by hand.
+//
+// The release currently published to public/download/releases/. Read via
+// publishedReleaseTag() in public/lib/releases.php; served by
+// public/download/version.php, which checks the archive is really on
+// disk before handing this out.
+const WOR_RELEASE_TAG     = '$OUTPUT_NAME';
+const WOR_RELEASE_VERSION = '$VERSION';
+const WOR_RELEASE_BUILD   = $BUILD;
+EOF
+mv -f "$RELEASE_TAG_FILE.tmp" "$RELEASE_TAG_FILE"
 
 echo
-echo "==> Updated public/index.php"
-echo "    \$latestVersion fallback -> $OUTPUT_NAME"
+echo "==> Updated public/lib/release-tag.php"
+echo "    WOR_RELEASE_TAG -> $OUTPUT_NAME (version $VERSION, build $BUILD)"
 echo
 echo "[OK] Download site updated. public/download/releases/ is gitignored,"
-echo "     so only the public/index.php edit shows up in 'git status'."
+echo "     so only the release-tag.php change shows up in 'git status'."

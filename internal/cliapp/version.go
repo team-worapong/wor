@@ -11,6 +11,7 @@ import (
 	"wor/internal/hostprovider"
 	"wor/internal/osutil"
 	"wor/internal/phpfpm"
+	"wor/internal/version"
 )
 
 // cmdVersion is deliberately just "did the binary install correctly"
@@ -28,6 +29,7 @@ func (a *App) cmdVersion() {
 	fmt.Fprintln(a.Out, ProductName)
 	fmt.Fprintln(a.Out, strings.Repeat("-", len(ProductName)))
 	fmt.Fprintf(a.Out, "Version  : %s\n", Version)
+	fmt.Fprintf(a.Out, "Release  : %s\n", releaseTag())
 	fmt.Fprintf(a.Out, "Commit   : %s\n", formatCommit())
 	fmt.Fprintf(a.Out, "OS       : %s\n", osutil.OSName())
 	if distro, ok := osutil.LinuxDistro(); ok {
@@ -160,4 +162,17 @@ func dbEngineForDetect() string {
 	default:
 		return ""
 	}
+}
+
+// releaseTag renders this binary as the published tag it corresponds to
+// -- "v1.0.1-b58" -- which is the string the download site, the install
+// one-liner and `wor upgrade` all speak in. Falls back to the bare
+// version when the build number was not stamped, since claiming a tag
+// that was never published would be worse than admitting the build is
+// unknown.
+func releaseTag() string {
+	if build, ok := version.BuildNumber(); ok {
+		return fmt.Sprintf("v%s-b%d", Version, build)
+	}
+	return fmt.Sprintf("v%s (build unknown -- not built by scripts/build.sh)", Version)
 }

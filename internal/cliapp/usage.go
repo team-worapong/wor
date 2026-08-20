@@ -7,6 +7,10 @@ func (a *App) usage() {
 
 Usage:
   wor version
+  wor upgrade [--yes]
+      (compares this binary against the release the download site
+      publishes, shows both, and installs the newer one once you
+      confirm. --yes skips the confirmation.)
   wor --version
   wor setup
   wor doctor
@@ -47,6 +51,11 @@ Usage:
   wor service restart <domain>/<service>
   wor service status
   wor service logs <domain>/<service> [--lines=100]
+  wor service chown <domain>/<service> [<user>]
+      (hands the service's files back to the operator account, or to
+      <user> if you name one. Changes the owner only, never the group,
+      and re-grants the php-fpm pool afterwards -- for a tree left
+      owned by root or by another admin. Needs elevation.)
 
   wor run
       (ensures every enabled service -- and the runtimes/web server it

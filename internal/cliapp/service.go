@@ -765,6 +765,9 @@ func (a *App) cmdService(args []string) error {
 			return nil
 		}
 
+	case "chown":
+		return a.cmdServiceChown(domain, service, rest)
+
 	default:
 		a.usage()
 		return a.errf("unknown service action: %s", action)

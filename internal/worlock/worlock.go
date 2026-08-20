@@ -10,6 +10,7 @@
 package worlock
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,6 +22,14 @@ import (
 // irrelevant -- only the OS-level advisory lock held on the open file
 // descriptor matters.
 const fileName = ".wor.lock"
+
+// ErrLockHeld reports the one failure that actually means "another wor
+// is running": the lock file opened fine, but a different process holds
+// the lock on it. Every other Acquire failure is something else --
+// usually a permission problem -- and telling the operator to wait for a
+// command that does not exist sends them looking in the wrong place.
+// Callers distinguish the two with errors.Is.
+var ErrLockHeld = errors.New("another wor command is already running")
 
 // Handle represents a held lock. Call Release to give it up. A nil
 // Handle is safe to Release (no-op), so callers can always defer
@@ -62,15 +71,36 @@ func Acquire(worHome string) (*Handle, error) {
 	path := filepath.Join(worHome, fileName)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil && os.IsPermission(err) {
-		// WOR_HOME itself can still be root-owned here even after
-		// cliapp.ensureRootDirs's own osutil.ClaimOwnership fix (e.g. a
-		// WOR_HOME that already existed, root-owned, from before that
-		// fix shipped, and hasn't had `wor setup` re-run against it
-		// yet). This is a defensive second line of fixing the same
-		// problem, scoped to worHome itself (not recursive -- see
-		// ClaimOwnership's own doc comment for why): claim it, then
-		// retry the open exactly once. Most invocations should never
-		// reach this branch at all.
+		// The lock file exists but belongs to a different account: it is
+		// created 0644, so whichever admin ran wor here first owns it.
+		//
+		// Opening read-only is enough, and is tried before anything that
+		// changes ownership. flock locks the open file description, not
+		// the file's contents, and this package never writes a byte to
+		// the lock file (see fileName's comment) -- so a 0644 file that
+		// any account can open for reading gives every account the same
+		// mutual exclusion, with nobody having to take ownership away
+		// from anybody.
+		//
+		// Order matters here. When this ran *after* the ClaimOwnership
+		// fallback below, simply reading the lock was enough to trigger
+		// a sudo chown of WOR_HOME on every invocation by the account
+		// that did not own it -- so two admins dragged WOR_HOME back and
+		// forth between them, one password prompt at a time, purely to
+		// reach a file that either of them could already open.
+		f, err = os.OpenFile(path, os.O_RDONLY, 0o644)
+	}
+	if err != nil && os.IsPermission(err) {
+		// Last resort, for the case the read-only open cannot help with:
+		// WOR_HOME is root-owned and the lock file does not exist yet,
+		// so it has to be *created*. This happens to a WOR_HOME that
+		// EnsureDir had to `sudo mkdir`, or one left behind root-owned
+		// by an older install. Scoped to worHome itself, not recursive
+		// -- see ClaimOwnership's own doc comment for why -- and it
+		// claims for the current user, since worlock has no access to
+		// the configured operator account (see osutil.EnsureOwnedBy).
+		// `wor setup` is what puts ownership right properly; this only
+		// has to get far enough to run a command at all.
 		if claimErr := osutil.ClaimOwnership(worHome); claimErr == nil {
 			f, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 		}
@@ -78,9 +108,9 @@ func Acquire(worHome string) (*Handle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot open lock file %s: %w", path, err)
 	}
-	if err := lockFile(f); err != nil {
+	if lockErr := lockFile(f); lockErr != nil {
 		f.Close()
-		return nil, fmt.Errorf("another wor command is already running (could not lock %s): %w", path, err)
+		return nil, fmt.Errorf("%w (could not lock %s): %w", ErrLockHeld, path, lockErr)
 	}
 	return &Handle{file: f}, nil
 }

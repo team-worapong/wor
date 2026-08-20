@@ -1,27 +1,10 @@
 <?php
 // WOR Host — landing page
-$latestVersion = 'v1.0.1-b58';
+require __DIR__ . '/lib/releases.php';
 
-// Sortable key: v1.0.0-b32 -> [1,0,0,32]; final releases outrank betas.
-function versionKey(string $tag): array {
-    if (!preg_match('/^v(\d+)\.(\d+)\.(\d+)(?:-?b(\d+))?/i', $tag, $m))
-        return [0, 0, 0, 0];
-    return [(int) $m[1], (int) $m[2], (int) $m[3], isset($m[4]) && $m[4] !== '' ? (int) $m[4] : PHP_INT_MAX];
-}
-
-$releasesDir = __DIR__ . '/download/releases';
-if (is_dir($releasesDir)) {
-    $best = null;
-    foreach (scandir($releasesDir) as $f) {
-        if (preg_match('/^(v\d+\.\d+\.\d+(?:-?[A-Za-z0-9.]+)?)\.(?:tar\.gz|zip|tgz)$/', $f, $m)) {
-            if ($best === null || (versionKey($m[1]) <=> versionKey($best)) > 0) {
-                $best = $m[1];
-            }
-        }
-    }
-    if ($best !== null)
-        $latestVersion = $best;
-}
+// Whatever scripts/release.sh last published. Null before the first
+// release, which only shows on a checkout that has never published.
+$latestVersion = publishedReleaseTag() ?? 'unreleased';
 ?>
 <!doctype html>
 <html lang="en" data-bs-theme="auto">

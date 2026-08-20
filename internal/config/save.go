@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"wor/internal/osutil"
 )
@@ -73,4 +74,52 @@ func SaveHostEnv(path, hostProvider string) error {
 		return err
 	}
 	return osutil.WriteFileAtomic(path, []byte(content), 0o644)
+}
+
+// SetHostEnvKey upserts a single `KEY=value` line in host.env, leaving
+// every other line -- including the commented-out override hints
+// SaveHostEnv scaffolds -- exactly as it found them.
+//
+// SaveHostEnv deliberately never touches an existing host.env, so a
+// setting that has to be written to an already-provisioned host needs
+// this instead. Writes go through WriteFilePrivileged because host.env
+// lives inside WOR_HOME and so belongs to the operator account, which
+// is not necessarily the account running `wor setup`.
+//
+// An existing line is matched case-insensitively on the key, so a file
+// that already spells it `wor_user` is updated in place rather than
+// gaining a second, contradictory line in the other case -- ParseKV
+// would then let file order decide the winner.
+func SetHostEnvKey(path, key, value string) error {
+	var lines []string
+	data, err := os.ReadFile(path)
+	if err != nil && os.IsPermission(err) {
+		data, err = osutil.ReadFilePrivileged(path)
+	}
+	switch {
+	case err == nil:
+		lines = strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	case os.IsNotExist(err):
+		lines = nil
+	default:
+		return err
+	}
+
+	replaced := false
+	for i, line := range lines {
+		name, _, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(name), key) {
+			continue
+		}
+		lines[i] = key + "=" + value
+		replaced = true
+	}
+	if !replaced {
+		lines = append(lines, key+"="+value)
+	}
+
+	return osutil.WriteFilePrivileged(path, []byte(strings.Join(lines, "\n")+"\n"))
 }

@@ -1,4 +1,5 @@
 <?php
+require __DIR__ . '/../lib/releases.php';
 // WOR Host — downloads page
 // Lists everything in ./releases/ plus installer.sh, grouped by version.
 
@@ -31,13 +32,9 @@ function extRank(string $ext): int {
     return $i === false ? count(EXT_ORDER) : $i;
 }
 
-// Sortable key for version tags: v1.0.0-b32 -> [1,0,0,32]; final releases outrank betas.
-function versionKey(string $tag): array {
-    if (!preg_match('/^v(\d+)\.(\d+)\.(\d+)(?:-?b(\d+))?/i', $tag, $m)) return [0, 0, 0, 0];
-    return [(int)$m[1], (int)$m[2], (int)$m[3], isset($m[4]) && $m[4] !== '' ? (int)$m[4] : PHP_INT_MAX];
-}
+// versionKey() and the release-name rules live in public/lib/releases.php,
+// shared with the landing page and download/version.php.
 
-$latest = null;     // ['file','size','mtime'] for latest.tar.gz
 $versions = [];     // tag => list of ['file','size','mtime','ext']
 $others = [];       // anything not matching the version pattern
 
@@ -46,9 +43,13 @@ if (is_dir($releasesDir)) {
         $path = $releasesDir . '/' . $f;
         if ($f[0] === '.' || !is_file($path)) continue;
         $entry = ['file' => $f, 'size' => filesize($path), 'mtime' => filemtime($path)];
+        // latest.tar.gz is retired (see scripts/release.sh). Skipped
+        // rather than listed so a leftover copy on a server that has not
+        // published since does not show up as a stray file.
         if ($f === 'latest.tar.gz') {
-            $latest = $entry;
-        } elseif (preg_match('/^(v\d+\.\d+\.\d+(?:-?[A-Za-z0-9.]+)?)\.(tar\.gz|zip|tgz|sha256)$/', $f, $m)) {
+            continue;
+        }
+        if (preg_match('/^(v\d+\.\d+\.\d+(?:-?[A-Za-z0-9.]+)?)\.(tar\.gz|zip|tgz|sha256)$/', $f, $m)) {
             $versions[$m[1]][] = $entry + ['ext' => $m[2]];
         } else {
             $others[] = $entry;
@@ -165,20 +166,25 @@ $latestTag = array_key_first($versions);
           </div>
         </div>
 
-        <?php if ($latest !== null): ?>
-        <!-- latest.tar.gz -->
+        <?php if ($latestTag !== null): ?>
+        <!--
+          The newest release, linked by its versioned filename. That URL
+          changes every release and so is never served stale from the CDN's
+          cache, which the old fixed latest.tar.gz name regularly was.
+        -->
         <div class="card border-0 shadow-sm mb-4">
           <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-2">
             <div>
               <h5 class="mb-1">
-                <i class="bi bi-lightning-charge me-2 text-warning"></i>latest.tar.gz
-                <?php if ($latestTag !== null): ?><span class="badge text-bg-warning ms-1"><?= htmlspecialchars($latestTag) ?></span><?php endif; ?>
+                <i class="bi bi-lightning-charge me-2 text-warning"></i>Latest release
+                <span class="badge text-bg-warning ms-1"><?= htmlspecialchars($latestTag) ?></span>
               </h5>
               <span class="text-body-secondary small">
-                <?= humanSize($latest['size']) ?> · updated <?= date('j M Y H:i', $latest['mtime']) ?> — always points at the newest build
+                <?php $latestFile = $versions[$latestTag][0] ?? null; ?>
+                <?= htmlspecialchars($latestTag) ?>.tar.gz<?php if ($latestFile !== null): ?> · <?= humanSize($latestFile['size']) ?> · published <?= date('j M Y H:i', $latestFile['mtime']) ?><?php endif; ?>
               </span>
             </div>
-            <a class="btn btn-primary" href="releases/latest.tar.gz" download><i class="bi bi-download me-1"></i>Download</a>
+            <a class="btn btn-primary" href="releases/<?= rawurlencode($latestTag) ?>.tar.gz" download><i class="bi bi-download me-1"></i>Download</a>
           </div>
         </div>
         <?php endif; ?>

@@ -60,3 +60,10 @@ func removeFilePrivilegedFallback(path string) error {
 func ClaimOwnership(_ string) error {
 	return nil
 }
+
+// EnsureOwnedBy is a no-op on Windows, for the same reason
+// ClaimOwnership is: there is no POSIX uid/gid to set and no sudo-style
+// escalation to set it with.
+func EnsureOwnedBy(_ string, _ string) error {
+	return nil
+}

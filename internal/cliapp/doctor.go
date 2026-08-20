@@ -240,13 +240,22 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 		a.checkCertificateRenewalSchedule()
 
 		if loose := scanLooseEnvFiles(a.Cfg.WorHome); len(loose) > 0 {
-			a.docWarn(".env file(s) readable beyond their own owner -- %d found:", len(loose))
+			a.docWarn(".env file(s) readable by any account on this machine -- %d found:", len(loose))
 			for _, p := range loose {
 				fmt.Fprintf(a.Out, "      %s\n", p)
 			}
-			a.info("Fix: find %s \\( -name '.env' -o -name '.env.*' \\) -exec chmod 600 {} +", a.Cfg.WorHome)
+			// 0640, not 0600. A service that runs under its own account
+			// (a per-service php-fpm pool, and every systemd service
+			// once those get their own user) reads its .env as a group
+			// member, not as the owner -- so 0600 would lock the service
+			// out of its own configuration and take the site down, which
+			// is a poor outcome for following a health check's advice.
+			// 0640 closes it to everyone else and leaves that group read
+			// intact.
+			a.info("Fix: find %s \\( -name '.env' -o -name '.env.*' \\) -exec chmod 640 {} +", a.Cfg.WorHome)
+			a.info("(0640, not 0600: a service running under its own account reads .env through its group.)")
 		} else if dirExists(a.Cfg.WorHome) {
-			a.docOK("No overly-permissive .env files found under WOR_HOME")
+			a.docOK("No world-readable .env files found under WOR_HOME")
 		}
 
 		if provider == "nginx" || provider == "apache" {
@@ -287,8 +296,20 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 
 // scanLooseEnvFiles walks worHome looking for .env / .env.* files
 // (the Node/Laravel/etc. convention for secrets -- DB passwords, API
-// keys) that are readable by anyone beyond their own owner (any
-// group/other permission bit set). This is deliberately independent
+// keys) that are readable by any account on the machine (any "other"
+// permission bit set).
+//
+// Group bits are deliberately allowed. This check used to require 0600
+// and told the operator to run `chmod 600` over the whole tree, which
+// on a host where services run under their own accounts -- a
+// per-service php-fpm pool today, every systemd service once those get
+// their own user -- takes the site down: the service reads its .env as
+// a group member, not as the owner, and 0600 locks it out of its own
+// configuration. Advice from a health check has to be safe to follow.
+// "No other bits" still closes the exposure this exists for, since that
+// exposure is about unrelated local accounts, not the service's own.
+//
+// This is deliberately independent
 // of checkWorHomeReachability above: that one is about letting the
 // web server reach files it's *supposed* to serve; this one is a
 // file's own last line of defense regardless of how open the
@@ -312,7 +333,7 @@ func scanLooseEnvFiles(worHome string) []string {
 		if err != nil {
 			return nil
 		}
-		if info.Mode().Perm()&0o077 != 0 {
+		if info.Mode().Perm()&0o007 != 0 {
 			found = append(found, path)
 		}
 		return nil
@@ -560,8 +581,21 @@ func (a *App) checkOperatorIdentity() {
 		if err != nil {
 			continue
 		}
-		for _, svc := range cfg.Services {
-			note(a.Store.ServiceDir(domain, svc.Name))
+		for i := range cfg.Services {
+			svc := &cfg.Services[i]
+			serviceDir := a.Store.ServiceDir(domain, svc.Name)
+			note(serviceDir)
+			// And the document root inside it, which drifts separately
+			// from the service directory containing it. A deploy that
+			// rsyncs as root rewrites everything under `public/` and
+			// leaves the service directory itself untouched, so
+			// sampling only the outer directory reported a clean host
+			// while the operator could not write the very files it was
+			// about to deploy next. `wor setup` does not repair that
+			// either -- alignTreeOwnership never touches root-owned
+			// files, deliberately -- so this is the check that has to
+			// see it. `wor service chown` is the repair.
+			note(resolveDocroot(serviceDir, svc))
 		}
 	}
 	if len(sample) == 0 {
@@ -574,12 +608,47 @@ func (a *App) checkOperatorIdentity() {
 	}
 	sort.Ints(uids)
 
+	// With an operator account configured there is a right answer to
+	// compare against, so the report is about conformance to it rather
+	// than about how many accounts happen to be involved.
+	if want := a.Cfg.OperatorUser; want != "" {
+		wrong := make([]int, 0, len(uids))
+		for _, uid := range uids {
+			if accountLabel(uid) != want {
+				wrong = append(wrong, uid)
+			}
+		}
+		if len(wrong) == 0 {
+			a.docOK("Service tree is owned by the configured wor account (%s)", want)
+			return
+		}
+		a.docWarn("%d director(ies) are not owned by the configured wor account (%s)", len(wrong), want)
+		for _, uid := range wrong {
+			fmt.Fprintf(a.Out, "      %s owns %s\n", accountLabel(uid), sample[uid])
+		}
+		// Deliberately not `sudo chown -R <want> <domains>`, which this
+		// used to print. Two things were wrong with it. It reaches every
+		// service on the host to repair the one that drifted. And it
+		// chowns pool-owned files along with everything else -- the
+		// very files the sampling above skips on purpose, because a
+		// pool account owning them is by design and not drift, so the
+		// advice contradicted the diagnosis that produced it.
+		//
+		// It also stops at ownership: a tree damaged by `rsync -a` has
+		// lost the setgid bit and the pool's group read as well, and
+		// nothing about a chown puts those back. `wor service chown`
+		// does the re-grant afterwards.
+		a.info("Fix, per service: wor service chown <domain>/<service>")
+		return
+	}
+
 	if len(uids) == 1 {
 		if uids[0] == os.Getuid() {
 			a.docOK("Service tree is owned by a single account (%s)", accountLabel(uids[0]))
 		} else {
 			a.docWarn("Service tree is owned by %s, but you are running wor as %s",
 				accountLabel(uids[0]), accountLabel(os.Getuid()))
+			a.info("Nothing pins that down yet. Set wor_user in %s/host.env to make it the account wor expects.", a.Cfg.Configs)
 		}
 		return
 	}
@@ -590,6 +659,7 @@ func (a *App) checkOperatorIdentity() {
 	}
 	a.info("You are currently %s. Whichever account did not create a directory cannot write it,", accountLabel(os.Getuid()))
 	a.info("so `wor deploy` and `wor source pull` will fail for that half of the tree.")
+	a.info("Set wor_user in %s/host.env to name the account they should all be.", a.Cfg.Configs)
 }
 
 // isServiceAccountUID reports whether uid belongs to one of the
@@ -600,7 +670,7 @@ func isServiceAccountUID(uid int) bool {
 	if err != nil {
 		return false
 	}
-	return strings.HasPrefix(u.Username, "wor_")
+	return isServiceAccountName(u.Username)
 }
 
 // accountLabel renders uid as a username, falling back to the bare

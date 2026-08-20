@@ -6,8 +6,10 @@ package cliapp
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 
 	"wor/internal/config"
@@ -33,6 +35,13 @@ type App struct {
 	Out io.Writer
 	Err io.Writer
 	In  *bufio.Reader
+
+	// previousOperatorUser is the operator account as it was configured
+	// when this process started, before `wor setup` overwrote
+	// Cfg.OperatorUser with whatever the operator answered. It is what
+	// tells alignTreeOwnership which account's files are the ones to
+	// move when the answer changes.
+	previousOperatorUser string
 }
 
 func New() (*App, error) {
@@ -101,7 +110,18 @@ func (a *App) Run(args []string) int {
 		lock, err := worlock.Acquire(a.Cfg.WorHome)
 		if err != nil {
 			fmt.Fprintf(a.Err, "ERROR: %s\n", err)
-			fmt.Fprintln(a.Err, "Another wor command appears to be running against the same WOR_HOME. Wait for it to finish and try again.")
+			// Only a genuinely held lock means "wait and retry". Saying
+			// that for every failure sent an operator hunting for a
+			// concurrent command that was never running, when the real
+			// cause was a lock file belonging to a different account.
+			if errors.Is(err, worlock.ErrLockHeld) {
+				fmt.Fprintln(a.Err, "Another wor command is running against the same WOR_HOME. Wait for it to finish and try again.")
+			} else if errors.Is(err, fs.ErrPermission) {
+				fmt.Fprintf(a.Err, "This is a permission problem, not a busy lock -- nothing else is running.\n")
+				fmt.Fprintf(a.Err, "%s and the account you are logged in as do not agree on who owns wor's state.\n", a.Cfg.WorHome)
+				fmt.Fprintln(a.Err, "Run `wor doctor` for the ownership breakdown once you can, or unblock this one file with:")
+				fmt.Fprintf(a.Err, "    sudo chown $(id -un) %s/.wor.lock\n", a.Cfg.WorHome)
+			}
 			return 1
 		}
 		defer lock.Release()
@@ -113,6 +133,8 @@ func (a *App) Run(args []string) int {
 		a.cmdVersion()
 	case "setup":
 		err = a.cmdSetup(rest)
+	case "upgrade":
+		err = a.cmdUpgrade(rest)
 	case "doctor":
 		var failed bool
 		failed, err = a.cmdDoctor(rest)
@@ -232,7 +254,10 @@ func allowsSudoElevation(cmd string, rest []string) bool {
 //     and so a wedged/long-running other command can't block them.
 func commandNeedsLock(cmd string, rest []string) bool {
 	switch cmd {
-	case "version", "--version", "-v", "help", "-h", "--help", "", "diagnose", "health", "path", "shell-init":
+	// upgrade replaces the binary; it reads and writes nothing under
+	// WOR_HOME, so holding the workspace lock would only mean an
+	// unrelated long-running command could block an upgrade.
+	case "version", "--version", "-v", "help", "-h", "--help", "", "diagnose", "health", "path", "shell-init", "upgrade":
 		return false
 	case "service", "host":
 		if len(rest) > 0 && rest[0] == "logs" {
@@ -269,7 +294,10 @@ func commandNeedsLock(cmd string, rest []string) bool {
 //     out *why* something else is failing.
 func requiresInitializedWorkspace(cmd string) bool {
 	switch cmd {
-	case "version", "--version", "-v", "help", "-h", "--help", "", "setup", "doctor", "shell-init":
+	//   - upgrade: installs a new binary. Requiring an initialized
+	//     workspace would mean a host that has not run `wor setup` yet
+	//     could never update the very binary it is about to run it with.
+	case "version", "--version", "-v", "help", "-h", "--help", "", "setup", "doctor", "shell-init", "upgrade":
 		return false
 	}
 	return true

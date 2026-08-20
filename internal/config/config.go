@@ -22,6 +22,21 @@ type Config struct {
 	Env        string // "production" | "development"
 	ConfigFile string // resolved path to ~/.wor/config
 
+	// OperatorUser is the single account wor's state is owned by and,
+	// once the wrapper described in docs is in place, the account wor
+	// itself runs as -- regardless of which admin is logged in.
+	//
+	// Empty means unconfigured, and every ownership decision falls back
+	// to "whoever is running wor", which is what wor did before this
+	// setting existed. That fallback is deliberate: a host with one
+	// admin account never needs this, and one with several must not have
+	// its ownership rearranged by an upgrade it did not ask for.
+	//
+	// Read from $WOR_HOME/configs/host.env in preference to a personal
+	// ~/.wor/config, because the whole point is a value that does not
+	// vary by who is logged in -- see Load.
+	OperatorUser string
+
 	WorHome string
 	Domains string
 	Backups string
@@ -115,6 +130,9 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// --- operator account (env var first, like every other setting) ---
+	c.OperatorUser = os.Getenv("WOR_USER")
+
 	// --- WOR_HOME (env var, then user config file) ---
 	c.WorHome = os.Getenv("WOR_HOME")
 	if c.WorHome == "" {
@@ -154,6 +172,22 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	applyBinFields(c, hostCfg)
+
+	// OperatorUser resolves host.env BEFORE ~/.wor/config -- the reverse
+	// of the precedence every other setting uses. A personal config file
+	// is the one place this answer must not come from: two admins have
+	// two of those, and the value only means anything if all of them
+	// agree. host.env lives inside WOR_HOME, so there is exactly one.
+	// (The WOR_USER environment variable still wins over both, so a
+	// migration can be rehearsed without editing any file.)
+	for _, m := range []map[string]string{hostCfg, userCfg} {
+		if c.OperatorUser != "" {
+			break
+		}
+		if v, ok := lookup(m, "wor_user", "WOR_USER"); ok {
+			c.OperatorUser = v
+		}
+	}
 
 	return c, nil
 }

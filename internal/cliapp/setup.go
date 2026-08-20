@@ -30,8 +30,19 @@ import (
 // fresh mkdir. ClaimOwnership is a no-op (no sudo prompt) whenever the
 // directory is already writable, which is the common case on every
 // re-run of `wor setup`.
-func (a *App) ensureRootDirs() error {
-	for _, d := range []string{
+// rootDirs is every directory wor itself owns the existence of inside
+// WOR_HOME. Being the definitive list matters twice over: ensureRootDirs
+// creates them, and alignTreeOwnership treats them as the boundary of
+// what it is allowed to re-chown.
+//
+// That boundary is the point. WOR_HOME is a convenient place to keep
+// things, so other tooling ends up putting directories there that wor
+// did not create and has no business rearranging -- a CI pipeline's
+// upload staging area, for instance, owned by its own deploy account.
+// Enumerating what wor owns is what keeps a wor command from reaching
+// into somebody else's.
+func (a *App) rootDirs() []string {
+	return []string{
 		a.Cfg.WorHome, a.Cfg.Domains, a.Cfg.Backups, a.Cfg.Configs,
 		filepath.Join(a.Cfg.Configs, "database"), a.Cfg.Logs, a.Cfg.SSL,
 		// The ACME challenge tree is created here, by the operator,
@@ -40,11 +51,19 @@ func (a *App) ensureRootDirs() error {
 		// exact problem DESIGN.md section 4 exists to avoid.
 		a.Cfg.ACME, filepath.Join(a.Cfg.ACME, ".well-known"), filepath.Join(a.Cfg.ACME, ".well-known", "acme-challenge"),
 		filepath.Join(a.Cfg.WorHome, "tmp"), filepath.Join(a.Cfg.WorHome, "scripts"), filepath.Join(a.Cfg.WorHome, "bin"),
-	} {
+	}
+}
+
+func (a *App) ensureRootDirs() error {
+	for _, d := range a.rootDirs() {
 		if err := osutil.EnsureDir(d); err != nil {
 			return err
 		}
-		if err := osutil.ClaimOwnership(d); err != nil {
+		// Hands the directory to the configured operator account rather
+		// than to whoever is running this command -- see
+		// osutil.EnsureOwnedBy. With no account configured this is
+		// byte-for-byte the old ClaimOwnership behaviour.
+		if err := osutil.EnsureOwnedBy(d, a.Cfg.OperatorUser); err != nil {
 			return err
 		}
 	}
@@ -67,6 +86,7 @@ func (a *App) cmdSetup(args []string) error {
 	existingHostProvider := a.Cfg.HostProvider
 	existingSSLProvider := a.Cfg.SSLProvider
 	existingPHPFPMEndpoint := a.Cfg.PHPFPMEndpoint
+	a.previousOperatorUser = a.Cfg.OperatorUser
 
 	fmt.Fprintln(a.Out, "WOR Setup Wizard")
 	fmt.Fprintln(a.Out, "================")
@@ -137,6 +157,9 @@ func (a *App) cmdSetup(args []string) error {
 	// Step 5: PHP / PHP-FPM.
 	a.setupPHP(existingPHPFPMEndpoint)
 
+	// Step 6: the account that owns all of this.
+	a.setupOperatorAccount()
+
 	// Summary.
 	fmt.Fprintln(a.Out)
 	fmt.Fprintln(a.Out, "Setup Summary")
@@ -154,6 +177,13 @@ func (a *App) cmdSetup(args []string) error {
 	} else {
 		fmt.Fprintln(a.Out, "php_fpm      : php not installed")
 	}
+	if osutil.IsLinux() {
+		if a.Cfg.OperatorUser != "" {
+			fmt.Fprintf(a.Out, "operator     : %s\n", a.Cfg.OperatorUser)
+		} else {
+			fmt.Fprintln(a.Out, "operator     : none (files stay owned by whoever runs wor)")
+		}
+	}
 	fmt.Fprintf(a.Out, "config       : %s\n", a.Cfg.ConfigFile)
 	fmt.Fprintln(a.Out)
 
@@ -164,7 +194,24 @@ func (a *App) cmdSetup(args []string) error {
 	if err := a.Cfg.Save(); err != nil {
 		return err
 	}
+	// Before ensureRootDirs, which hands each base directory to this
+	// account and so needs it to exist and to be recorded first.
+	if err := a.applyOperatorAccount(); err != nil {
+		return err
+	}
+	// Read before ensureRootDirs, used after it. ensureRootDirs hands
+	// wor's directories to the new operator account, which destroys the
+	// only record of who held them a moment ago -- and that is exactly
+	// the account whose files have to be swept up. See treeOwnerUIDs.
+	priorOwners := a.treeOwnerUIDs()
 	if err := a.ensureRootDirs(); err != nil {
+		return err
+	}
+	// After ensureRootDirs: that settles the base directories
+	// themselves, this sweeps up what an earlier operator account left
+	// inside them. Re-running setup on an already-aligned host finds
+	// nothing to move and says nothing.
+	if err := a.alignTreeOwnership(priorOwners); err != nil {
 		return err
 	}
 	a.ok("Config written: %s", a.Cfg.ConfigFile)

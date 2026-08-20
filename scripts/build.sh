@@ -132,6 +132,25 @@ make_windows_resource() {
     --out "$ROOT_DIR/cmd/wor/rsrc"
 }
 
+# read_build reports the running commit count (git rev-list --count HEAD),
+# the same number scripts/release.sh names a tag's "-b<n>" suffix after.
+# Stamped into the binary below so `wor version` and `wor upgrade` can
+# tell two releases of the same version number apart -- 1.0.1 covered
+# builds 51 through 58, and Go embeds the commit SHA automatically but
+# not the commit count.
+#
+# Derived here rather than passed in by release.sh so a plain
+# `./scripts/build.sh linux amd64` stamps the same number a release
+# would at that commit. Empty outside a git work tree, which is not an
+# error: the binary just reports its build as unknown.
+read_build() {
+  if ! command -v git >/dev/null 2>&1; then
+    echo ""
+    return 0
+  fi
+  git -C "$ROOT_DIR" rev-list --count HEAD 2>/dev/null || echo ""
+}
+
 # build_one GOOS_VALUE OS_LABEL GOARCH_VALUE
 build_one() {
   local goos_value="$1" os_label="$2" goarch_value="$3"
@@ -151,8 +170,16 @@ build_one() {
 
   mkdir -p "$(dirname "$out_path")"
 
+  local build_number
+  build_number="$(read_build)"
+  if [ -n "$build_number" ]; then
+    echo "    Build  : $build_number"
+  fi
+
   #echo "==> go build ./cmd/wor"
-  GOOS="$goos_value" GOARCH="$goarch_value" go build -o "$out_path" ./cmd/wor
+  GOOS="$goos_value" GOARCH="$goarch_value" go build \
+    -ldflags "-X wor/internal/version.Build=$build_number" \
+    -o "$out_path" ./cmd/wor
 
   echo "[OK] Build complete: ./dist/bin/$bin_name"
 }

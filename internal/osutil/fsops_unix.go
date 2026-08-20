@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/user"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -134,6 +136,65 @@ func ClaimOwnership(dir string) error {
 	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("cannot chown %s to the current user: %w (%s)", dir, err, ElevationHint())
+	}
+	return nil
+}
+
+// EnsureOwnedBy makes path -- a directory or a single file -- belong to
+// username, the one account wor's state is supposed to be owned by,
+// whoever happens to be invoking wor at the time.
+//
+// This exists because ClaimOwnership's "chown it to me" rule only holds
+// while there is exactly one admin account. With two, each one takes the
+// directories away from the other on every run, one sudo prompt at a
+// time, and neither can write what the other created. Naming the owner
+// explicitly ends that: the answer stops depending on who is logged in.
+//
+// The self-healing ClaimOwnership was written for is kept -- a directory
+// that EnsureDir had to create through `sudo mkdir`, and so came out
+// root-owned, is handed to username here just the same. What changes is
+// only *which* account it is handed to.
+//
+// An empty username means no canonical account is configured, and the
+// historical behaviour applies unchanged. That is what keeps this safe
+// to ship ahead of the account existing: nothing moves until the setting
+// is set.
+//
+// Ownership, not writability, is the test. ClaimOwnership probes whether
+// it can write and stops if it can, which cannot distinguish "correctly
+// owned" from "owned by someone else who left it group-writable" -- the
+// exact case this is here to catch.
+func EnsureOwnedBy(path, username string) error {
+	if username == "" {
+		return ClaimOwnership(path)
+	}
+	u, err := user.Lookup(username)
+	if err != nil {
+		return fmt.Errorf("cannot resolve the configured wor account %q: %w", username, err)
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return fmt.Errorf("account %q has a non-numeric uid %q", username, u.Uid)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return fmt.Errorf("account %q has a non-numeric gid %q", username, u.Gid)
+	}
+
+	curUID, curGID, err := FileOwner(path)
+	if err != nil {
+		return err
+	}
+	if curUID == uid && curGID == gid {
+		return nil
+	}
+
+	cmd, cerr := SudoCommand("chown", "-h", fmt.Sprintf("%d:%d", uid, gid), path)
+	if cerr != nil {
+		return cerr
+	}
+	if runErr := cmd.Run(); runErr != nil {
+		return fmt.Errorf("cannot chown %s to %s: %w (%s)", path, username, runErr, ElevationHint())
 	}
 	return nil
 }

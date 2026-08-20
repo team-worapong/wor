@@ -571,18 +571,30 @@ func (a *App) recordSync(host string, r ssl.SyncResult) {
 }
 
 // prepareACMEWebroot makes sure the challenge directory exists and
-// belongs to the operator before certbot is invoked.
+// belongs to the operator account before certbot is invoked.
 //
 // ensureRootDirs only runs from `wor setup`, so on a workspace created
 // by an earlier version this directory does not exist -- and certbot,
 // running as root, would create it itself, leaving a root-owned tree
 // inside WOR_HOME.
+//
+// EnsureOwnedBy, not ClaimOwnership: this is the one directory outside
+// `wor setup` that gets handed to somebody on a plain `wor ssl` run, and
+// "claim it for whoever is typing" is exactly the rule the operator
+// account exists to replace. Left as ClaimOwnership, an admin who is not
+// the operator would sudo-chown the ACME tree to themselves on every
+// certificate operation -- reintroducing, one directory at a time, the
+// drift that setup had just finished sweeping out.
+//
+// With no operator configured EnsureOwnedBy falls through to
+// ClaimOwnership, so hosts that never ran the operator step behave
+// exactly as before.
 func (a *App) prepareACMEWebroot() error {
 	for _, dir := range []string{a.Cfg.ACME, filepath.Join(a.Cfg.ACME, ".well-known"), filepath.Join(a.Cfg.ACME, ".well-known", "acme-challenge")} {
 		if err := osutil.EnsureDir(dir); err != nil {
 			return err
 		}
-		if err := osutil.ClaimOwnership(dir); err != nil {
+		if err := osutil.EnsureOwnedBy(dir, a.Cfg.OperatorUser); err != nil {
 			return err
 		}
 	}
