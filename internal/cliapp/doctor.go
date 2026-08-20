@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 
 	"wor/internal/dbbackup"
@@ -233,6 +236,7 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 		a.docOK("Permission checks skipped (Windows uses a different access-control model)")
 	} else {
 		a.checkWorHomeOwnership()
+		a.checkOperatorIdentity()
 		a.checkCertificateRenewalSchedule()
 
 		if loose := scanLooseEnvFiles(a.Cfg.WorHome); len(loose) > 0 {
@@ -497,6 +501,116 @@ func (a *App) checkWorHomeOwnership() {
 	}
 	a.docWarn("WOR_HOME (%s) is owned by root, but you are not", a.Cfg.WorHome)
 	a.info("Certificate sync cannot run while it is. Fix: sudo chown -R $(id -un) %s", a.Cfg.WorHome)
+}
+
+// checkOperatorIdentity reports how many different accounts have written
+// into WOR_HOME's domain tree.
+//
+// wor has no notion of a canonical operator account: it runs as whoever
+// invoked it, creates directories 0755 owned by that account
+// (osutil.EnsureDir), keeps its own config at that account's
+// ~/.wor/config, and chowns WOR_HOME's base directories to it on every
+// run (osutil.ClaimOwnership, via ensureRootDirs). One admin account and
+// none of that shows. Two -- an operator who reaches the same server
+// under different login names, say a local SSH key on one machine and a
+// cloud console's own account from another -- and the tree ends up split
+// between them: each side cannot write the other's service directories,
+// their wor configs disagree about WOR_HOME, and every alternate run
+// chowns the base directories back and forth behind a sudo prompt.
+//
+// Reported, not repaired. Consolidating onto one account means chowning
+// a live tree and deciding which account wins, which is a deliberate
+// migration and not something a health check should start on its own.
+//
+// Only directories are examined -- each domain, and each service under
+// it -- rather than walking every file: the divergence shows at exactly
+// that level, and a full walk of every service's node_modules would cost
+// far more than the answer is worth.
+func (a *App) checkOperatorIdentity() {
+	if !dirExists(a.Cfg.Domains) {
+		return
+	}
+	domains, err := a.Store.ListDomains()
+	if err != nil {
+		return
+	}
+
+	// uid -> one example path owned by it, for a report that points at
+	// something the operator can actually go and look at.
+	sample := map[int]string{}
+	note := func(path string) {
+		uid, _, err := osutil.FileOwner(path)
+		if err != nil {
+			return
+		}
+		// Pool users own the directories of the services they run (see
+		// setupPHPPool); they are not operators and their presence here
+		// is by design, not drift.
+		if isServiceAccountUID(uid) {
+			return
+		}
+		if _, seen := sample[uid]; !seen {
+			sample[uid] = path
+		}
+	}
+
+	for _, domain := range domains {
+		note(a.Store.DomainDir(domain))
+		cfg, err := a.Store.LoadServices(domain)
+		if err != nil {
+			continue
+		}
+		for _, svc := range cfg.Services {
+			note(a.Store.ServiceDir(domain, svc.Name))
+		}
+	}
+	if len(sample) == 0 {
+		return
+	}
+
+	uids := make([]int, 0, len(sample))
+	for uid := range sample {
+		uids = append(uids, uid)
+	}
+	sort.Ints(uids)
+
+	if len(uids) == 1 {
+		if uids[0] == os.Getuid() {
+			a.docOK("Service tree is owned by a single account (%s)", accountLabel(uids[0]))
+		} else {
+			a.docWarn("Service tree is owned by %s, but you are running wor as %s",
+				accountLabel(uids[0]), accountLabel(os.Getuid()))
+		}
+		return
+	}
+
+	a.docWarn("Service tree is split across %d accounts -- wor assumes one operator", len(uids))
+	for _, uid := range uids {
+		fmt.Fprintf(a.Out, "      %s owns %s\n", accountLabel(uid), sample[uid])
+	}
+	a.info("You are currently %s. Whichever account did not create a directory cannot write it,", accountLabel(os.Getuid()))
+	a.info("so `wor deploy` and `wor source pull` will fail for that half of the tree.")
+}
+
+// isServiceAccountUID reports whether uid belongs to one of the
+// dedicated per-service accounts wor creates (phpfpm.PoolName's
+// "wor_<domain>_<service>" convention), as opposed to a human operator.
+func isServiceAccountUID(uid int) bool {
+	u, err := user.LookupId(strconv.Itoa(uid))
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(u.Username, "wor_")
+}
+
+// accountLabel renders uid as a username, falling back to the bare
+// numeric id for an account that no longer exists in the passwd
+// database -- which is itself worth seeing in a health report.
+func accountLabel(uid int) string {
+	if u, err := user.LookupId(strconv.Itoa(uid)); err == nil {
+		return u.Username
+	}
+	return fmt.Sprintf("uid %d", uid)
 }
 
 // checkCertificateRenewalSchedule warns when Let's Encrypt certificates

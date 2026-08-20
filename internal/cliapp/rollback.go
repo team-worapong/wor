@@ -102,6 +102,13 @@ func (a *App) cmdRollback(args []string) error {
 		return fmt.Errorf("git clean failed: %w", err)
 	}
 
+	// `git reset --hard` rewrites tracked files and `git clean -fd`
+	// removes and re-creates directories, both as whoever ran the
+	// rollback -- so a pooled php service can come back with a document
+	// root its own pool user cannot read. The deploy offered below would
+	// re-grant too, but it defaults to no.
+	a.reapplyPHPPoolAccess(domain, service)
+
 	a.ok("Rolled back %s to origin/%s", target, branch)
 	a.info("Backup of previous state: %s", backupPath)
 	if stashCount > 0 {

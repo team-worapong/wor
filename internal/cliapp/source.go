@@ -350,7 +350,16 @@ func (a *App) cmdSource(args []string) error {
 		if service != "" {
 			rollbackTarget = target
 		}
-		return a.gitPull(dir, rollbackTarget, fl.Has("stash"))
+		if err := a.gitPull(dir, rollbackTarget, fl.Has("stash")); err != nil {
+			return err
+		}
+		// A pull writes files as whoever ran it, so a php service's pool
+		// user can lose read access to whatever the pull brought in.
+		// `wor deploy` re-grants for the same reason, but this command
+		// bypasses deploy entirely. service is "" for a bare-domain
+		// target, which re-grants every pooled service under it.
+		a.reapplyPHPPoolAccess(domain, service)
+		return nil
 
 	case "clone":
 		return a.sourceClone(target, rest)
@@ -497,6 +506,7 @@ func (a *App) sourceClone(target string, rest []string) error {
 			return err
 		}
 		a.ok("Cloned: %s", target)
+		a.reapplyPHPPoolAccess(domain, service)
 		return a.offerCloneDeploy(domain, service, target)
 	}
 
@@ -505,5 +515,13 @@ func (a *App) sourceClone(target string, rest []string) error {
 		return err
 	}
 	a.ok("Cloned: %s", target)
+	// A clone replaces the whole tree with files git just created as the
+	// operator, so a pooled php service loses its pool group and its
+	// setgid directories wholesale -- the most complete way this grant
+	// can be undone. Done here rather than left to offerCloneDeploy's
+	// delegation to `wor deploy`, because that deploy is an optional
+	// prompt (default no) and never runs at all for a bare-domain target
+	// or an unregistered service.
+	a.reapplyPHPPoolAccess(domain, service)
 	return a.offerCloneDeploy(domain, service, target)
 }

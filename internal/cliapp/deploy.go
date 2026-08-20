@@ -171,6 +171,18 @@ func (a *App) cmdDeploy(args []string) error {
 		}
 	}
 
+	// Everything above this point can have written new files into the
+	// service tree -- the git pull itself, npm ci, npm run build, pip
+	// install, the go build -- and every one of them creates those files
+	// owned by whoever ran `wor deploy`, with that account's primary
+	// group. A per-service php-fpm pool runs as its own dedicated user
+	// that is only a member of the group recorded at pool creation, so
+	// those fresh files are unreadable to it until the grant is
+	// re-applied. Done unconditionally rather than gated on `changed`:
+	// the pull is not the only way files appear, and the pass is
+	// idempotent.
+	a.reapplyPHPPoolAccess(domain, service)
+
 	provider := domainmodel.ProcessProviderFor(svcType)
 	switch {
 	case !noRestart && provider == "pm2":

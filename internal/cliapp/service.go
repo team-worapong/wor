@@ -224,7 +224,7 @@ func (a *App) setupPHPPool(domain, service, phpVersion string) error {
 		poolUser, group = u, g
 	} else {
 		poolUser = phpfpm.PoolName(domain, service)
-		docRoot := filepath.Join(a.Store.ServiceDir(domain, service), "public")
+		docRoot := a.phpPoolDocRoot(domain, service)
 		if err := phpfpm.EnsureUser(poolUser); err != nil {
 			return err
 		}
@@ -275,6 +275,74 @@ func (a *App) setupPHPPool(domain, service, phpVersion string) error {
 	}
 
 	return a.Store.SetServicePHPFPM(domain, service, phpVersion, group, 0)
+}
+
+// phpPoolDocRoot is the directory a per-service php-fpm pool must be
+// able to read: the service's public/ tree. Shared by setupPHPPool (the
+// initial grant) and reapplyPHPPoolAccess (the re-grant) so the two can
+// never disagree about which directory the grant covers.
+func (a *App) phpPoolDocRoot(domain, service string) string {
+	return filepath.Join(a.Store.ServiceDir(domain, service), "public")
+}
+
+// reapplyPHPPoolAccess re-grants php-fpm pool users read access to the
+// document roots they serve, using the group recorded when each pool was
+// created. Call it after anything that writes into a service tree -- a
+// git pull, a fresh clone, a hard reset, an npm/pip install -- because
+// those files belong to whoever ran the command, with that account's
+// primary group, and the pool user is not a member of it. Without this
+// the pool ends up unable to read the very code it is meant to execute.
+//
+// service is the single service to re-grant, or "" to cover every
+// service under domain -- `wor source pull` and `wor source clone` both
+// accept a bare domain target, which rewrites the trees of every service
+// beneath it at once.
+//
+// A no-op for services with no per-service pool, and on macOS, where the
+// pool runs as the current login user rather than a dedicated account
+// (see setupPHPPool) and so has nothing to be granted.
+func (a *App) reapplyPHPPoolAccess(domain, service string) {
+	if osutil.IsMacOS() {
+		return
+	}
+	cfg, err := a.Store.LoadServices(domain)
+	if err != nil {
+		return
+	}
+	for i := range cfg.Services {
+		svc := &cfg.Services[i]
+		if service != "" && svc.Name != service {
+			continue
+		}
+		a.reapplyOnePHPPoolAccess(domain, svc)
+	}
+}
+
+// reapplyOnePHPPoolAccess is reapplyPHPPoolAccess for a single already
+// loaded service record.
+//
+// Every failure here is reported as a warning rather than returned as an
+// error: by the time this runs the caller has already pulled, cloned or
+// reset the tree, so failing would neither undo that nor spare the
+// service the restart it still needs. The manual remediation is printed
+// instead, matching how setupPHPPool handles a stale pool socket.
+func (a *App) reapplyOnePHPPoolAccess(domain string, svc *domainmodel.Service) {
+	if !svc.UsesPerServicePHPFPM() {
+		return
+	}
+	if svc.PHPPoolGroup == "" {
+		a.warn("service %s/%s has a php-fpm pool but no recorded pool group -- re-run `wor service edit` to repair it", domain, svc.Name)
+		return
+	}
+	docRoot := a.phpPoolDocRoot(domain, svc.Name)
+	if _, err := os.Stat(docRoot); err != nil {
+		a.warn("service %s/%s has a php-fpm pool but no document root at %s -- pool access not re-granted", domain, svc.Name, docRoot)
+		return
+	}
+	if err := phpfpm.ReapplyGroupAccess(docRoot, svc.PHPPoolGroup); err != nil {
+		a.warn("could not re-grant php-fpm pool access to %s: %s", docRoot, err)
+		a.info("Run manually: sudo chgrp -R %s %s && sudo chmod -R g+rX %s", svc.PHPPoolGroup, docRoot, docRoot)
+	}
 }
 
 // teardownPHPPool removes domain/service's dedicated php-fpm pool (pool

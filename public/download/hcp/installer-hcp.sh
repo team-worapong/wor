@@ -95,11 +95,19 @@ mkdir -p "$backup" "$(dirname "$service_root/$entry")"
 [ ! -e "$service_root/$entry" ] || cp "$service_root/$entry" "$backup/app"
 [ ! -d "$service_root/public" ] || cp -R "$service_root/public" "$backup/public"
 
+restart_service() {
+  if [ -r /dev/tty ]; then
+    wor service restart "$target" </dev/tty
+  else
+    wor service restart "$target"
+  fi
+}
+
 rollback() {
   echo "Install failed; restoring previous files" >&2
   [ ! -f "$backup/app" ] || cp "$backup/app" "$service_root/$entry"
   if [ -d "$backup/public" ]; then rm -rf "$service_root/public"; cp -R "$backup/public" "$service_root/public"; fi
-  wor service restart "$target" >/dev/null 2>&1 || true
+  restart_service >/dev/null 2>&1 || true
 }
 trap 'status=$?; if [ $status -ne 0 ]; then rollback; fi; rm -rf "$tmp_dir"; exit $status' EXIT
 
@@ -110,5 +118,5 @@ rm -rf "$service_root/public.new"
 cp -R "$tmp_dir/wor-hcp/public" "$service_root/public.new"
 rm -rf "$service_root/public"
 mv "$service_root/public.new" "$service_root/public"
-wor service restart "$target"
+restart_service
 echo "WOR HCP v$version installed successfully for $target"
