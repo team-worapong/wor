@@ -128,7 +128,7 @@ jobs:
       # logic itself stays in scripts/release.sh so there is exactly one
       # definition of what a release archive contains.
       - name: Package release archives
-        run: ./scripts/release.sh --skip-build
+        run: ./scripts/release.sh --skip-build --no-publish
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

@@ -20,7 +20,7 @@ import "strconv"
 const ProductName = "WOR Host"
 
 // Number is wor's release version string.
-const Number = "1.0.1"
+const Number = "1.0.2"
 
 // Build is the release build number -- the running commit count that
 // scripts/release.sh puts in a tag's "-b<n>" suffix (v1.0.1-b58 is

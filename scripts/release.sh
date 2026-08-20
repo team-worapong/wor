@@ -25,7 +25,7 @@
 # together with scripts/install.sh.
 #
 # Usage:
-#   ./scripts/release.sh [output-name] [--skip-build] [--no-publish]
+#   ./scripts/release.sh [output-name] [--skip-build] [--no-publish] [--allow-dirty]
 #
 # --skip-build packages whatever is already in dist/bin instead of
 # rebuilding it. It exists so a step can be inserted between building and
@@ -47,6 +47,13 @@
 # waste there. The download site is published from a working copy on a
 # real machine, which is the case where the default (publish) is what you
 # want.
+#
+# --allow-dirty packages a work tree that still has uncommitted changes.
+# Refused by default: the build number is a commit count, so a dirty tree
+# means the tag names a commit that does not contain what is being
+# packaged -- edit the version, forget to commit, and v1.0.2-b62 ships
+# built from the commit that still said 1.0.1. Use it for throwaway
+# builds, never for a release anybody else will install.
 #
 # [output-name] is optional and overrides the archive *filenames* only
 # (not the folder name inside them -- see PKG_DIR below): e.g.
@@ -111,7 +118,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
-USAGE="usage: ./scripts/release.sh [output-name] [--skip-build] [--no-publish]"
+USAGE="usage: ./scripts/release.sh [output-name] [--skip-build] [--no-publish] [--allow-dirty]"
 
 for tool in zip tar; do
   if ! command -v "$tool" >/dev/null 2>&1; then
@@ -137,6 +144,7 @@ fi
 OUTPUT_NAME=""
 SKIP_BUILD=0
 PUBLISH=1
+ALLOW_DIRTY=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -145,6 +153,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-publish)
       PUBLISH=0
+      ;;
+    --allow-dirty)
+      ALLOW_DIRTY=1
       ;;
     --*)
       echo "ERROR: unknown option: $1" >&2
@@ -200,6 +211,31 @@ BUILD="$(git -C "$ROOT_DIR" rev-list --count HEAD 2>/dev/null)" || BUILD=""
 if [ -z "$BUILD" ]; then
   echo "ERROR: could not determine build number ('git rev-list --count HEAD' failed -- is $ROOT_DIR a git work tree with at least one commit?)." >&2
   exit 1
+fi
+
+# Refuse to package a tree with uncommitted changes.
+#
+# BUILD above is a commit count, so it only moves when you commit --
+# editing internal/version/version.go and releasing without committing
+# produces a tag like v1.0.2-b62 whose b62 names a commit that still
+# says 1.0.1. The tag would then point at the wrong source, which is the
+# one thing deriving it from git was meant to prevent. Go marks such a
+# binary "-dirty" (see cliapp.formatCommit), but only in `wor version`,
+# long after the archive has been published under a name nobody can
+# tell is wrong.
+#
+# dist/ and public/download/releases/ are gitignored, so this does not
+# fire on build output. It does fire on public/lib/release-tag.php after
+# a previous release regenerated it -- commit that too; it is the record
+# of what the site is serving.
+if [ "$ALLOW_DIRTY" -eq 0 ]; then
+  DIRTY="$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null)"
+  if [ -n "$DIRTY" ]; then
+    echo "ERROR: the work tree has uncommitted changes, so build $BUILD does not describe what would be packaged." >&2
+    echo "$DIRTY" | sed 's/^/    /' >&2
+    echo "Commit them and re-run, or pass --allow-dirty for a throwaway build." >&2
+    exit 1
+  fi
 fi
 
 if [ "$SKIP_BUILD" -eq 1 ]; then
