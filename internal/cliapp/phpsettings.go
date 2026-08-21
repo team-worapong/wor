@@ -138,6 +138,18 @@ func (s phpSettingsState) Drifted() bool {
 	return s.Err == nil && s.PoolRead && !s.UpToDate
 }
 
+// poolSettingSourceLines renders pool settings as the `key = value`
+// lines the file itself carries, for showing what a service asked for.
+// Deliberately not phpfpm.PoolSettingLines, which answers the different
+// question of what the pool's process-manager block becomes.
+func poolSettingSourceLines(settings []phpfpm.PoolSetting) []string {
+	lines := make([]string, 0, len(settings))
+	for _, s := range settings {
+		lines = append(lines, s.Key+" = "+s.Value)
+	}
+	return lines
+}
+
 // Configured reports whether either file asks for anything at all.
 func (s phpSettingsState) Configured() bool {
 	for _, f := range s.Files {
@@ -182,7 +194,15 @@ func (a *App) readPHPSettingsState(domain, service string, svc *domainmodel.Serv
 		state.Err = err
 		return state
 	}
-	state.Files[1].Lines = phpfpm.PoolSettingLines(poolSettings)
+	// What the FILE asks for, not what the pool ends up with.
+	// phpfpm.PoolSettingLines is the renderer: it merges wor's defaults
+	// with the file's overrides, so it returns a full process-manager
+	// block even for a service that has no php-fpm.ini at all -- which
+	// made `wor info` announce a settings file that does not exist and
+	// list five directives nobody asked for (found on a real host,
+	// 2026-08-21). An inspection has to report what was configured; what
+	// is in force is the pool file, and `wor service reload` prints it.
+	state.Files[1].Lines = poolSettingSourceLines(poolSettings)
 
 	// A pool wor cannot rebuild -- an incomplete record, most likely a
 	// pool created before its group was ever written down -- is "cannot
@@ -358,21 +378,30 @@ func (a *App) cmdServiceReload(domain, service string) error {
 	}
 	a.ok("Reloaded php-fpm %s pool for %s/%s", version, domain, service)
 
-	// Print what actually landed, not just "done": the settings live in
-	// files wor rendered somewhere else, so showing them here is the
-	// only confirmation the admin gets that the edit was understood.
+	// Print what actually landed, not just "done": the pool wor rewrote
+	// is somewhere else on disk, so showing it here is the only
+	// confirmation the admin gets that the edit was understood.
+	//
 	// The process-manager block is always printed, because wor generates
-	// it whether or not php-fpm.ini exists -- "these are your pool's
-	// current limits" is the answer somebody running this wants.
-	fmt.Fprintf(a.Out, "Process manager (%s):\n", a.phpPoolSettingsPath(domain, service))
+	// one whether or not php-fpm.ini exists -- "these are your pool's
+	// current limits" is what somebody running this wants to know. But
+	// the heading only names the file when the file is what produced
+	// them: naming a path that does not exist reads as "wor read this",
+	// which is the mistake this output made until a rehearsal on a real
+	// host showed it (2026-08-21).
+	source := "wor defaults"
+	if len(poolSettings) > 0 {
+		source = a.phpPoolSettingsPath(domain, service)
+	}
+	fmt.Fprintf(a.Out, "Process manager in force (%s):\n", source)
 	for _, line := range phpfpm.PoolSettingLines(poolSettings) {
 		fmt.Fprintf(a.Out, "  %s\n", line)
 	}
 	if len(settings) == 0 {
-		a.info("No PHP settings in %s -- the pool uses PHP %s's own php.ini defaults.", a.phpSettingsPath(domain, service), version)
+		a.info("No PHP settings applied -- the pool uses PHP %s's own php.ini. Add %s to override.", version, a.phpSettingsPath(domain, service))
 		return nil
 	}
-	fmt.Fprintf(a.Out, "PHP settings (%s):\n", a.phpSettingsPath(domain, service))
+	fmt.Fprintf(a.Out, "PHP settings in force (%s):\n", a.phpSettingsPath(domain, service))
 	for _, line := range phpfpm.SettingLines(settings) {
 		fmt.Fprintf(a.Out, "  %s\n", line)
 	}
@@ -388,7 +417,18 @@ func (a *App) printPHPSettingsInfo(domain, service string, svc *domainmodel.Serv
 		return
 	}
 	if !state.Configured() {
-		fmt.Fprintf(a.Out, "  Settings  : none (no %s or %s)\n", phpfpm.SettingsFileName, phpfpm.PoolSettingsFileName)
+		// A file that exists but sets nothing is a different statement
+		// from no file at all, and an admin who just wrote one wants to
+		// be told which of the two wor is looking at.
+		anyExists := false
+		for _, f := range state.Files {
+			anyExists = anyExists || f.Exists
+		}
+		if anyExists {
+			fmt.Fprintln(a.Out, "  Settings  : none (the .wor settings files set nothing)")
+		} else {
+			fmt.Fprintf(a.Out, "  Settings  : none (no %s or %s)\n", phpfpm.SettingsFileName, phpfpm.PoolSettingsFileName)
+		}
 		return
 	}
 	fmt.Fprintln(a.Out, "  Settings  :")

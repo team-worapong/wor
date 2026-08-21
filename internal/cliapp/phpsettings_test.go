@@ -398,3 +398,63 @@ func TestPHPSettingsHealthQuietOnIncompletePoolRecord(t *testing.T) {
 		t.Error("Drifted() = true when wor could not rebuild the pool to compare against")
 	}
 }
+
+// Regression, found by a rehearsal on a real macOS host (2026-08-21):
+// `wor info` announced a .wor/php-fpm.ini that did not exist and listed
+// five process-manager directives nobody had asked for. The cause was
+// using phpfpm.PoolSettingLines -- the renderer, which merges wor's
+// defaults in -- to answer "what did this service configure".
+func TestPHPSettingsStateReportsNothingWhenNoFilesExist(t *testing.T) {
+	app := newPooledPHPTestApp(t, "shop-example-com", "site")
+	v := writeTestPool(t, app, "shop-example-com", "site")
+	svc := testServiceRecord(t, app, "shop-example-com", "site")
+
+	state := app.readPHPSettingsState("shop-example-com", "site", svc, v)
+
+	if state.Configured() {
+		t.Errorf("Configured() = true for a service with no settings files: %+v", state.Files)
+	}
+	for _, f := range state.Files {
+		if len(f.Lines) != 0 {
+			t.Errorf("%s reports %q, want nothing -- the file does not exist", f.Path, f.Lines)
+		}
+	}
+}
+
+func TestPrintPHPSettingsInfoSaysNoneWithNoFiles(t *testing.T) {
+	app := newPooledPHPTestApp(t, "shop-example-com", "site")
+	v := writeTestPool(t, app, "shop-example-com", "site")
+	svc := testServiceRecord(t, app, "shop-example-com", "site")
+
+	app.printPHPSettingsInfo("shop-example-com", "site", svc, v)
+
+	out := app.Out.(*bytes.Buffer).String()
+	if !strings.Contains(out, "none") {
+		t.Errorf("info = %q, want it to report no settings", out)
+	}
+	if strings.Contains(out, "pm = dynamic") {
+		t.Errorf("info = %q, want no process-manager directives for a service that configured none", out)
+	}
+	if strings.Contains(out, phpfpm.PoolSettingsFileName+"\n") {
+		t.Errorf("info = %q, want it not to name a settings file that does not exist", out)
+	}
+}
+
+// What a service DID configure is still listed, as the file wrote it --
+// not merged with wor's defaults.
+func TestPrintPHPSettingsInfoListsOnlyWhatTheFileSets(t *testing.T) {
+	app := newPooledPHPTestApp(t, "shop-example-com", "site")
+	writePoolSettingsFile(t, app, "shop-example-com", "site", "pm.max_children = 40\n")
+	v := writeTestPool(t, app, "shop-example-com", "site")
+	svc := testServiceRecord(t, app, "shop-example-com", "site")
+
+	app.printPHPSettingsInfo("shop-example-com", "site", svc, v)
+
+	out := app.Out.(*bytes.Buffer).String()
+	if !strings.Contains(out, "pm.max_children = 40") {
+		t.Errorf("info = %q, want the directive the file sets", out)
+	}
+	if strings.Contains(out, "pm.start_servers") {
+		t.Errorf("info = %q, want only what the file sets, not wor's defaults around it", out)
+	}
+}

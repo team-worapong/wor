@@ -796,8 +796,197 @@ crontab, so nothing was going to renew anything and the hook would never
 have fired. It follows the precedent set in section 9 for `pm2 startup`:
 report the gap, offer the command, never install it silently.
 
+## 22. Per-service PHP settings (`.wor/php.ini`, `.wor/php-fpm.ini`)
+
+A php service with its own pool (section 8) configures itself through two
+optional files in its own tree, beside the web-server snippets of
+section 17:
+
+    WOR_HOME/domains/<domain>/<service>/.wor/php.ini       PHP ini settings
+    WOR_HOME/domains/<domain>/<service>/.wor/php-fpm.ini   pool tuning
+
+### wor reads these files; php never does
+
+A php-fpm pool has no way to include a php.ini of its own. The only
+per-pool ini mechanism the SAPI offers is the `php_value` /
+`php_admin_value` family inside the pool's own `*.conf`, and the obvious
+alternative -- `env[PHP_INI_SCAN_DIR]` in the pool -- cannot work
+either: the master parses php.ini once at startup and every worker is a
+fork of it, long before any pool's env is applied. So wor parses these
+files itself and renders directives into the pool config.
+
+The upside of that translation step is that `WritePool` already runs
+`php-fpm -t` before reloading, so a bad setting is caught by php-fpm's
+own parser rather than by wor guessing what is valid. Verified against a
+real php-fpm: `-t` rejects `min_spare > max_spare`, `max_children = 0`,
+an unknown `pm` value and an unknown directive.
+
+### Why two files rather than one with sections
+
+They configure two different layers, and php-fpm treats them
+differently. `memory_limit` is a PHP ini setting: it becomes
+`php_value[memory_limit]`, and the application can still `ini_set()`
+past it exactly as it could past php.ini. `pm.max_children` is a pool
+directive: written bare, invisible to the application, governing the
+worker processes rather than anything inside them.
+
+One file would mean one line silently meaning `php_value` and the next
+meaning a raw directive, decided by a lookup table the reader of the
+file cannot see. Two files, each with one meaning, is the honest shape --
+and it keeps php.ini's "no `[sections]`" rule, which the alternative
+would have had to reverse.
+
+The few keys PHP classifies as PHP_INI_SYSTEM (`max_file_uploads`,
+`expose_php`) are emitted as `php_admin_value` instead, because
+`php_value` cannot set those at all and php-fpm ignores the attempt
+rather than reporting it -- which would look like it worked.
+
+### Allowlists, and why an unknown key is an error
+
+These files live in the service tree, which the deploy account writes,
+while the pool config they feed is written by root. Two consequences.
+
+First, the renderer never treats a file as text to paste: parsing is
+strictly line/key/value, and every value is checked for control
+characters, because a value carrying a newline would otherwise end the
+`php_value` directive and let the rest of the line become a pool
+directive of the author's choosing.
+
+Second, only an allowlist of keys is accepted, and a key outside it is
+an **error** rather than a skipped line. A setting that was asked for
+and silently not applied is the failure mode this whole feature exists
+to avoid, so wor refuses the file as a whole and names the line at
+fault. Keys that reach beyond the pool's own workers stay out
+deliberately and say why: `error_log` and the other log paths (the root
+master opens them), `extension`/`zend_extension`/`sendmail_path` (they
+name code to run), `open_basedir`/`disable_functions` (host-level
+containment a service must not be able to widen), `opcache.*`
+(allocated once by the master, so a per-pool value is ignored), and --
+in php-fpm.ini -- everything that defines the pool's identity: `user`,
+`group`, `listen` and the socket ownership, which a service able to set
+could use to run as another service's account or take over its socket.
+
+Everything left in the allowlists affects only the requesting service's
+own workers, which is exactly the blast radius that service's own PHP
+code already has.
+
+### Pool tuning replaces wor's defaults; it is not appended
+
+php-fpm takes the last assignment of a directive, so appending the
+service's values after wor's would work -- and would leave a pool file
+saying `pm.max_children = 5` on one line and `pm.max_children = 40` four
+lines later, where the reader has to know php-fpm's precedence rules to
+tell which one is live. `PoolSettingLines` merges by key instead and
+emits each directive exactly once. Setting `pm = static` or
+`pm = ondemand` also switches which directives the block carries at all:
+php-fpm tolerates `pm.start_servers` under `pm = static` (it ignores
+it), but a pool file listing settings the running mode does not use
+misleads whoever reads it next.
+
+This replaced `Service.PHPMaxChildren`, a field that had existed since
+section 8 and was always zero because no command ever set it. Once
+php-fpm.ini owns the value, keeping the field would have meant two
+sources for one setting.
+
+### Applying: deploy, and a reload that is not a restart
+
+`wor deploy` applies both files: they are validated before the first
+side effect, so a typo stops the deploy while the tree is still
+untouched, and the pool is re-rendered after the build, because the pull
+itself can bring in different files. Either failure fails the deploy
+rather than shipping code against settings that could not be applied.
+
+**Deploy skips the write entirely when the rendered pool would be
+byte-for-byte what is already on disk.** Writing anyway means a
+privileged write, a `php-fpm -t` and a reload of the shared master --
+which cycles the workers of every *other* service under it -- on every
+deploy of any pooled php service, almost all of which change code and
+not pool settings.
+
+`wor service reload <domain>/<service>` applies them on their own, for a
+settings-only change. It does not skip, because somebody typing a reload
+command means it. It is deliberately narrow -- configuration only, never
+the process (`wor service restart`) and never the vhost
+(`wor host reload`); one verb meaning three different amounts of
+disruption would be impossible to reason about. It is also the only way
+to apply these files to a service whose source is not a git repository,
+which `wor deploy` requires.
+
+### Drift is a whole-file comparison
+
+`phpfpm.PoolUpToDate` compares `PoolFileContent(pool)` against the pool
+file on disk. One comparison covers both settings files and a pool
+config edited by hand, and it is the same call deploy uses to decide
+whether writing is worth doing -- so the two can never disagree about
+what "up to date" means. `wor info` lists what each file asks for and
+marks a pool that no longer matches, `wor diagnose` warns about the same
+drift and about a file that no longer parses, and `wor health` sweeps
+for it across the fleet, so a file edited and never applied is found
+without having to suspect that one service first. All three are
+read-only and never elevate: a pool file they cannot read is reported as
+unchecked, never as drifted, and the same goes for a pool record too
+incomplete to rebuild.
+
+One trap this created, found by rehearsal rather than by any test:
+`PoolSettingLines` is the *renderer*, so it returns a full
+process-manager block even for a service with no php-fpm.ini. Using it
+to answer "what did this service configure" made `wor info` announce a
+file that did not exist. Inspections use the file's own lines; only the
+renderer and `wor service reload` show the merged block.
+
+### Rollback had to change
+
+`WritePool` used to roll back a failed write by deleting the pool file.
+That was right while it was a create-time call only. Now that deploy
+re-renders existing pools, deleting would turn one bad setting into a
+service with no pool at all, so it snapshots the previous contents and
+restores them, falling back to removal only when the file did not exist
+or could not be read (a config that fails `-t` must not be left behind:
+it would break the next reload for every pool under that master).
+
+### Scope
+
+Only a php service with its own pool reads these files. A service on the
+shared host-wide `PHP_FPM_ENDPOINT` (`--no-php-pool`, a service created
+before per-service pools, or Windows) has no pool to configure, and a
+node/go/python/static service that inherited a stray copy has nothing to
+do with PHP at all. In both cases wor warns on deploy that the files are
+not applied to anything and does not even parse them -- an invalid file
+under a service that would never read it fails nothing, because there
+was no setting to drop.
+
+Implementation: `internal/phpfpm/settings.go` (php.ini),
+`internal/phpfpm/poolsettings.go` (php-fpm.ini, sharing the same
+scanner), `internal/cliapp/phpsettings.go` (paths, loading, the
+re-render, and the inspections). Full user-facing rules live in
+`docs/services.md`; `docs/commands.md` summarises and links there rather
+than restating an allowlist in two places.
+
 ## Known gaps / still to verify
 
+- **Section 22 (per-service PHP settings) has been rehearsed on both a
+  macOS and a Linux host, but has never run against a service anyone
+  depends on.** On the Mac (Homebrew, PHP 8.4) and on
+  `mooda-central-sg-01` (Debian 13, PHP 8.4) the same checks passed:
+  deploy leaves the pool file untouched when nothing changed and
+  rewrites it when php-fpm.ini does; a value php-fpm rejects
+  (`pm.max_children = 0`) produces "config test failed ... rolled back"
+  with the previous pool restored byte-for-byte; the other pool under
+  the same master keeps its socket; and on Linux the socket stays
+  `www-data:www-data` with a per-service unix user. The live php service
+  on that host (`com-moodasoft/app-v2`) reported no drift after the
+  upgrade, which is the answer that mattered: an existing pool renders
+  identically under the new code.
+- The `force` argument that decides whether `wor deploy` skips an
+  unchanged pool has **no unit test** -- only `phpfpm.PoolUpToDate`,
+  the decision it delegates to, does. Both branches were verified by
+  hand on real hosts. Re-check them by hand if that wiring is touched.
+  The reliable probe is the pool file's mtime across the command
+  (`stat -c %Y` / `stat -f %m`): unchanged means `WritePool` was never
+  called, so there was no config test and no reload. Process PIDs do
+  not work -- `systemctl reload` is graceful and keeps the master's PID
+  on Linux, and on macOS `brew services restart` leaves a window where
+  `pgrep` finds nothing at all.
 - **The SSL rework (sections 19-21) has not been run against a real
   certificate authority yet.** It builds, vets and tests clean on every
   target, and the generated configs are covered by rendering tests, but
