@@ -94,7 +94,11 @@ func TestCmdRunSkipsDisabledServices(t *testing.T) {
 // registering the service in the Store first.
 func TestRunServicePHPPoolVersionNotDetected(t *testing.T) {
 	app := newTestRunApp(t)
-	svc := domainmodel.Service{Name: "cms", Enabled: true, Type: "php", PHPVersion: "8.3"}
+	// A version number no host has. Using a real one ("8.3") made this
+	// test pass only on machines where that PHP is not installed: on a
+	// developer box or CI image that happens to have it, DetectVersions
+	// finds it and the test takes the other branch entirely.
+	svc := domainmodel.Service{Name: "cms", Enabled: true, Type: "php", PHPVersion: "0.1"}
 
 	err := app.runService("shop-example-com", svc)
 	if err == nil {

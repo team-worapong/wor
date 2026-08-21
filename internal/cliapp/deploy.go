@@ -73,6 +73,15 @@ func (a *App) cmdDeploy(args []string) error {
 	if err := a.requireTemplateRuntime(svcType); err != nil {
 		return err
 	}
+	// Validate this service's PHP settings while the tree is still
+	// untouched: a typo in .wor/php.ini should stop the deploy here,
+	// not after the pull, the build and the restart have all happened.
+	// The pull can of course bring in a different php.ini, so this is
+	// an early exit, not the real check -- that is rewritePHPPool
+	// below, whose failure is equally fatal to the deploy.
+	if err := a.checkPHPSettings(domain, service); err != nil {
+		return err
+	}
 
 	before, _ := gitOutput(serviceDir, "rev-parse", "HEAD")
 	if !noPull {
@@ -182,6 +191,19 @@ func (a *App) cmdDeploy(args []string) error {
 	// the pull is not the only way files appear, and the pass is
 	// idempotent.
 	a.reapplyPHPPoolAccess(domain, service)
+
+	// Re-render the pool from the tree that is now on disk, so an edit
+	// to .wor/php.ini or .wor/php-fpm.ini takes effect on deploy without
+	// a separate step. Fatal on failure: the alternative is a deploy
+	// that reports success while the pool keeps settings the service no
+	// longer asks for. A no-op for everything that isn't a php service
+	// with a pool of its own -- and, because force is false, also a
+	// no-op when the pool file already matches, which is the common
+	// case: deploys mostly change code, not pool settings, and writing
+	// anyway would reload the shared php-fpm master every time.
+	if err := a.rewritePHPPool(domain, service, false); err != nil {
+		return err
+	}
 
 	provider := domainmodel.ProcessProviderFor(svcType)
 	switch {

@@ -1,6 +1,9 @@
 <?php
 // WOR Host — documentation page
-$latestVersion = 'v1.0.0-b32';
+// Fallback only: the real value is the newest archive in download/releases
+// (scanned below). Kept current so a machine without that directory still
+// shows a version that exists.
+$latestVersion = 'v1.0.2-b64';
 
 // Sortable key: v1.0.0-b32 -> [1,0,0,32]; final releases outrank betas.
 function versionKey(string $tag): array {
@@ -354,6 +357,7 @@ if (is_readable($commandsPath)) {
                                 <li class="nav-item"><a class="nav-link" href="#install">Install</a></li>
                                 <li class="nav-item"><a class="nav-link" href="#quickstart">Quick start</a></li>
                                 <li class="nav-item"><a class="nav-link" href="#templates">Service templates</a></li>
+                                <li class="nav-item"><a class="nav-link" href="#per-service">Per-service config</a></li>
                                 <li class="nav-item"><a class="nav-link" href="#tls">TLS certificates</a></li>
                             </ul>
                             <?php if ($commandsToc): ?>
@@ -512,6 +516,14 @@ wor setup" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
 
                                 </div><!-- /tab-windows -->
                             </div><!-- /tab-content -->
+
+                            <h5 class="fw-bold mt-5 mb-2">Staying up to date</h5>
+                            <p class="text-body-secondary">WOR upgrades itself. <code>wor upgrade</code> asks the download site what it currently publishes, shows you that release next to the one you are running, and installs the newer one once you confirm — <code>--yes</code> skips the confirmation. It hands installation to the <code>install.sh</code> inside the downloaded archive rather than reimplementing it, so there is only one tested install path; replacing the running binary is safe, because <code>install(1)</code> unlinks the target before writing and your process keeps running from the old inode.</p>
+                            <div class="code-block mb-3">
+                                <pre><span class="prompt">$</span> wor upgrade</pre>
+                                <button class="btn btn-sm btn-copy" data-copy="wor upgrade" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
+                            </div>
+                            <p class="text-body-secondary">Not available on Windows, where <code>install.sh</code> cannot run: download the new release and replace <code>wor.exe</code> by hand.</p>
                         </section>
 
                         <!-- Quick start -->
@@ -575,6 +587,68 @@ wor health" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
                             </div>
                         </section>
 
+                        <!-- Service templates -->
+                        <section id="templates" class="nav-anchor mb-5">
+                            <h2 class="fw-bold mb-3"><i class="bi bi-stars me-2 text-primary"></i>Service templates</h2>
+                            <div class="table-responsive">
+                                <table class="table table-hover align-middle">
+                                    <thead>
+                                        <tr><th>Template</th><th>Runtime</th><th>Process provider</th><th>Default entry point</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr><td><code>static</code></td><td>none</td><td>web server serves <code>public/</code></td><td>—</td></tr>
+                                        <tr><td><code>node</code></td><td>Node.js</td><td>PM2 (every OS)</td><td><code>app.js</code></td></tr>
+                                        <tr><td><code>go</code></td><td>Go</td><td>systemd (Linux) / PM2 (else)</td><td><code>app</code> (compiled binary)</td></tr>
+                                        <tr><td><code>python</code></td><td>Python</td><td>systemd (Linux) / PM2 (else)</td><td><code>app.py</code></td></tr>
+                                        <tr><td><code>php</code></td><td>PHP-FPM</td><td>Dedicated PHP-FPM pool per service</td><td><code>public/index.php</code></td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <p class="text-body-secondary">A <code>php</code> service gets its own pool — its own socket and its own selectable PHP version — whenever exactly one PHP-FPM version is detected; <code>--php-version=</code> picks one when several are, and <code>--no-php-pool</code> falls back to the shared host-wide endpoint. On Linux each pool also runs as its own dedicated unix user, so services are isolated from each other. On macOS they are not: Homebrew's php-fpm master runs unprivileged as your login user, and an unprivileged master cannot switch a worker to a different account.</p>
+                        </section>
+
+                        <!-- Per-service config -->
+                        <section id="per-service" class="nav-anchor mb-5">
+                            <h2 class="fw-bold mb-3"><i class="bi bi-sliders me-2 text-primary"></i>Per-service configuration</h2>
+                            <p class="text-body-secondary">Every service has a <code>.wor</code> directory in its own source tree for configuration WOR reads but your application does not. It sits above the document root, so the web server never serves it.</p>
+                            <div class="code-block mb-4">
+                                <pre>$WOR_HOME/domains/&lt;domain&gt;/&lt;service&gt;/.wor/
+├── nginx/*.conf      web-server snippets (any service type)
+├── apache/*.conf     web-server snippets (any service type)
+├── php.ini           PHP ini settings   (php services with their own pool)
+└── php-fpm.ini       pool tuning        (php services with their own pool)</pre>
+                            </div>
+
+                            <h5 class="fw-bold mt-4 mb-2">Web-server snippets</h5>
+                            <p class="text-body-secondary">Every <code>*.conf</code> you drop into <code>.wor/nginx</code> or <code>.wor/apache</code> is included inside that service's <code>server { }</code> block or <code>&lt;VirtualHost&gt;</code>, right after WOR's own directives — then <code>wor host reload</code>. You may add directives and locations; on nginx you may not redefine a <code>location</code> WOR already emits, because nginx rejects duplicates on reload. With the HTTPS redirect on, snippets land in the <code>:443</code> block only — a snippet in a block that does nothing but redirect could never run.</p>
+                            <p class="text-body-secondary">WOR writes a <code>default.conf.example</code> beside them showing the current generated config for that exact service. It does not end in <code>.conf</code>, so it is never loaded, and it is regenerated on every host write — copy it to build on it rather than editing it in place.</p>
+
+                            <h5 class="fw-bold mt-4 mb-2">PHP settings</h5>
+                            <p class="text-body-secondary">A php service with its own pool configures itself through two files. <code>php.ini</code> holds PHP ini settings; <code>php-fpm.ini</code> holds php-fpm pool directives. Two files because they are two different layers: the first becomes <code>php_value[...]</code> your application can still <code>ini_set()</code> past, the second is written into the pool as-is and governs the worker processes.</p>
+                            <div class="code-block mb-3">
+                                <pre><span class="prompt">$</span> cat myapp/.wor/php.ini
+memory_limit = 512M
+upload_max_filesize = 64M
+post_max_size = 64M
+
+<span class="prompt">$</span> cat myapp/.wor/php-fpm.ini
+pm = static
+pm.max_children = 40
+pm.max_requests = 500
+
+<span class="prompt">$</span> wor service reload myapp/web</pre>
+                                <button class="btn btn-sm btn-copy" data-copy="wor service reload myapp/web" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
+                            </div>
+                            <p class="text-body-secondary"><strong>WOR reads these files; PHP does not.</strong> A PHP-FPM pool has no way to include a php.ini of its own — the only per-pool mechanism is <code>php_value</code>/<code>php_admin_value</code> inside the pool's own config, and <code>PHP_INI_SCAN_DIR</code> cannot stand in for it, because the master parses php.ini once at startup and every worker is a fork of that. So WOR parses these files and renders directives into the pool, which <code>php-fpm -t</code> validates before anything reloads — and rolls back to the previous pool config if it does not, so a bad value can never take down the other pools sharing that master.</p>
+                            <p class="text-body-secondary">Only an allowlist of keys is accepted in each file, and a key outside it <strong>fails</strong> rather than being skipped — a setting you asked for is never silently dropped. WOR lists the current set in the <code>.example</code> file it writes beside each one. Some keys are refused on purpose and say why: in <code>php.ini</code>, <code>error_log</code> (the master opens it as root), <code>extension</code> and <code>sendmail_path</code> (they name code to run), <code>open_basedir</code> and <code>disable_functions</code> (host-level containment a service must not widen), and <code>opcache.*</code> (allocated once by the master, so a per-pool value is ignored). In <code>php-fpm.ini</code>, everything that defines the pool's identity — <code>user</code>, <code>group</code>, <code>listen</code> and the socket ownership — because a service able to set those could run as another service's account or take over its socket.</p>
+                            <p class="text-body-secondary">Pool tuning replaces WOR's defaults rather than being appended to them: without a <code>php-fpm.ini</code> a pool gets <code>pm = dynamic</code> with <code>pm.max_children = 5</code>, and setting <code>pm = static</code> or <code>pm = ondemand</code> switches the block to the directives that mode actually uses. The pool file lists each directive exactly once, with the value in force.</p>
+                            <p class="text-body-secondary"><code>wor deploy</code> applies both files as part of a normal deploy — skipping the write and the reload entirely when the rendered pool would be identical to what is already there, because reloading the shared master cycles every other service's workers. <code>wor service reload</code> applies them on their own, without reinstalling dependencies, rebuilding or restarting anything. <code>wor info</code> shows the settings and flags a pool that has drifted from them, <code>wor diagnose</code> warns about the same drift and about a file that no longer parses, and <code>wor health</code> reports drift across the whole fleet.</p>
+                            <div class="alert alert-secondary d-flex gap-2" role="alert">
+                                <i class="bi bi-info-circle-fill flex-shrink-0"></i>
+                                <div><code>wor source clone</code> replaces a service's whole tree, so it asks what to do with an existing <code>.wor</code> before it does anything — keep it (the default) or take the repository's copy. Committing <code>.wor</code> to your repository is the tidy way to version this configuration alongside the code.</div>
+                            </div>
+                        </section>
+
                         <!-- TLS -->
                         <section id="tls" class="nav-anchor mb-5">
                             <h2 class="fw-bold mb-3"><i class="bi bi-shield-lock me-2 text-primary"></i>TLS certificates</h2>
@@ -603,25 +677,6 @@ wor ssl status myapp.example.com" aria-label="Copy"><i class="bi bi-clipboard"><
                                 <div>
                                     <strong>Check that something actually renews.</strong> Debian's certbot package installs a systemd timer; Homebrew's does not. With no schedule, nothing renews and the deploy hook never fires. <code>wor doctor</code> warns when Let's Encrypt certificates exist with no schedule on the machine, and <code>wor health</code> reports certificate expiry as a warning.
                                 </div>
-                            </div>
-                        </section>
-
-                        <!-- Service templates -->
-                        <section id="templates" class="nav-anchor mb-5">
-                            <h2 class="fw-bold mb-3"><i class="bi bi-stars me-2 text-primary"></i>Service templates</h2>
-                            <div class="table-responsive">
-                                <table class="table table-hover align-middle">
-                                    <thead>
-                                        <tr><th>Template</th><th>Runtime</th><th>Process provider</th><th>Default entry point</th></tr>
-                                    </thead>
-                                    <tbody>
-                                        <tr><td><code>static</code></td><td>none</td><td>web server serves <code>public/</code></td><td>—</td></tr>
-                                        <tr><td><code>node</code></td><td>Node.js</td><td>PM2 (every OS)</td><td><code>app.js</code></td></tr>
-                                        <tr><td><code>go</code></td><td>Go</td><td>systemd (Linux) / PM2 (else)</td><td><code>app</code> (compiled binary)</td></tr>
-                                        <tr><td><code>python</code></td><td>Python</td><td>systemd (Linux) / PM2 (else)</td><td><code>app.py</code></td></tr>
-                                        <tr><td><code>php</code></td><td>PHP-FPM</td><td>Dedicated PHP-FPM pool per service (Linux)</td><td><code>public/index.php</code></td></tr>
-                                    </tbody>
-                                </table>
                             </div>
                         </section>
 

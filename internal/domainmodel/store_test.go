@@ -101,7 +101,7 @@ func TestSetAndClearServicePHPFPM(t *testing.T) {
 		t.Fatalf("AddService(cms): %v", err)
 	}
 
-	if err := store.SetServicePHPFPM("blog-example-com", "cms", "8.3", "www-data", 10); err != nil {
+	if err := store.SetServicePHPFPM("blog-example-com", "cms", "8.3", "www-data"); err != nil {
 		t.Fatalf("SetServicePHPFPM: %v", err)
 	}
 	if v := store.GetServicePHPVersion("blog-example-com", "cms"); v != "8.3" {
@@ -111,9 +111,6 @@ func TestSetAndClearServicePHPFPM(t *testing.T) {
 	svc := cfg.FindService("cms")
 	if svc.PHPPoolGroup != "www-data" {
 		t.Errorf("PHPPoolGroup = %q, want www-data", svc.PHPPoolGroup)
-	}
-	if svc.PHPMaxChildren != 10 {
-		t.Errorf("PHPMaxChildren = %d, want 10", svc.PHPMaxChildren)
 	}
 	if !svc.UsesPerServicePHPFPM() {
 		t.Error("UsesPerServicePHPFPM() = false, want true after SetServicePHPFPM")
@@ -132,7 +129,7 @@ func TestSetServicePHPFPMMissingService(t *testing.T) {
 	if err := store.MakeDomainFiles("blog-example-com"); err != nil {
 		t.Fatalf("MakeDomainFiles: %v", err)
 	}
-	if err := store.SetServicePHPFPM("blog-example-com", "does-not-exist", "8.3", "www-data", 0); err == nil {
+	if err := store.SetServicePHPFPM("blog-example-com", "does-not-exist", "8.3", "www-data"); err == nil {
 		t.Error("expected an error for a nonexistent service, got nil")
 	}
 }

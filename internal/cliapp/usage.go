@@ -49,6 +49,12 @@ Usage:
   wor service start <domain>/<service>
   wor service stop <domain>/<service>
   wor service restart <domain>/<service>
+  wor service reload <domain>/<service>
+      (php services with their own pool only: re-renders the pool from
+      .wor/php.ini and .wor/php-fpm.ini, validates it, reloads php-fpm,
+      and prints what is now in force. Config only -- to restart the
+      process use "wor service restart", to re-render a vhost use
+      "wor host reload".)
   wor service status
   wor service logs <domain>/<service> [--lines=100]
   wor service chown <domain>/<service> [<user>]
@@ -77,13 +83,19 @@ Usage:
   wor source clone <domain> <git-url>
   wor source clone <domain>/<service> <git-url>
       (if the target already has source, it's backed up via
-      "wor source backup" automatically, then replaced -- no flag needed)
+      "wor source backup" automatically, then replaced -- no flag needed.
+      Replacing the tree would also take .env and .wor with it, so it
+      asks what to do with each before doing anything.)
   wor source pull <domain> [--stash]
   wor source pull <domain>/<service> [--stash]
   wor source backup <domain> [--gitignore=enable|disable]
   wor source backup <domain>/<service> [--gitignore=enable|disable]
 
   wor deploy <host|domain/service> [--pull-only] [--no-pull] [--no-restart] [--force] [--stash]
+      (for a php service with its own pool, also re-renders that pool
+      from the service's .wor/php.ini and .wor/php-fpm.ini -- see
+      docs/services.md. An invalid file fails the deploy before the tree
+      is touched; an unchanged pool is left alone rather than reloaded.)
   wor rollback <domain>/<service> [--yes]
       (hard-resets the service's source to origin/<branch>, discarding
       uncommitted local changes -- backs up via "wor source backup"

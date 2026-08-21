@@ -13,6 +13,7 @@ import (
 	"wor/internal/domainmodel"
 	"wor/internal/gitignore"
 	"wor/internal/osutil"
+	"wor/internal/phpfpm"
 )
 
 // sourceBackup zips a domain or service source tree into
@@ -439,6 +440,71 @@ func (a *App) preserveDotEnv(dest, tmp string) error {
 	}
 }
 
+// preserveDotWor decides what happens to dest/.wor before replaceDir
+// swaps dest for the freshly cloned tree, the same question
+// preserveDotEnv asks about .env and for the same reason: the directory
+// holds configuration wor itself reads -- the per-service web-server
+// snippets (.wor/nginx, .wor/apache) and the per-service PHP settings
+// (.wor/php.ini) -- and a repository that gitignores it is a repository
+// whose pre-clone backup does not contain it either.
+//
+// Keeping it is the default because that can never lose anything. When
+// the cloned repository ships its own .wor (the sensible way to version
+// this configuration alongside the code), the repo's copy is set aside
+// as .wor.new rather than merged: wor cannot know which of two
+// hand-written configs is the wanted one, and silently picking would be
+// worse than leaving both on disk.
+func (a *App) preserveDotWor(dest, tmp string) error {
+	oldWor := filepath.Join(dest, ".wor")
+	if info, err := os.Stat(oldWor); err != nil || !info.IsDir() {
+		return nil
+	}
+	newWor := filepath.Join(tmp, ".wor")
+	repoHasWor := false
+	if info, err := os.Stat(newWor); err == nil && info.IsDir() {
+		repoHasWor = true
+	}
+
+	a.warn("==================== .wor ====================")
+	a.warn(".wor exists in %s", dest)
+	a.warn("It holds this service's own wor configuration: web-server")
+	a.warn("snippets (.wor/nginx, .wor/apache) and PHP settings")
+	a.warn("(.wor/%s). A fresh clone replaces the whole tree, and", phpfpm.SettingsFileName)
+	a.warn("the source backup honors .gitignore -- so if .wor is")
+	a.warn("gitignored it is NOT in the backup zip and can be lost.")
+	if repoHasWor {
+		a.warn("The cloned repository also contains its own .wor.")
+	} else {
+		a.warn("The cloned repository does NOT contain a .wor.")
+	}
+	a.warn("==============================================")
+	fmt.Fprintln(a.Err, "  1) keep   -- keep the current .wor; the repo's copy (if any) is saved as .wor.new")
+	fmt.Fprintln(a.Err, "  2) delete -- use the repo's .wor only (or none); the current .wor is DISCARDED")
+
+	for {
+		switch a.prompt("Choose 1-2 [1=keep]: ") {
+		case "", "1", "keep":
+			if repoHasWor {
+				if err := os.Rename(newWor, filepath.Join(tmp, ".wor.new")); err != nil {
+					return fmt.Errorf("saving repo .wor as .wor.new: %w", err)
+				}
+				a.info("Repo's .wor saved as .wor.new -- compare and merge manually if needed.")
+			}
+			return copyDir(oldWor, newWor)
+		case "2", "delete":
+			if !a.confirmYesDefaultNo("The current .wor may not be recoverable from the backup zip. Really discard it?") {
+				continue
+			}
+			if !repoHasWor {
+				a.warn("%s will have no .wor after this clone -- wor regenerates its scaffolding, but any snippets and PHP settings in it are gone.", dest)
+			}
+			return nil
+		default:
+			fmt.Fprintln(a.Err, "Please answer 1 or 2.")
+		}
+	}
+}
+
 // offerCloneDeploy is the tail end of `wor source clone` for targets
 // that are registered services: a fresh clone has no node_modules, no
 // npm build output, and (for go templates) no compiled binary, so the
@@ -499,6 +565,10 @@ func (a *App) sourceClone(target string, rest []string) error {
 			return err
 		}
 		if err := a.preserveDotEnv(dest, tmp); err != nil {
+			os.RemoveAll(tmp)
+			return err
+		}
+		if err := a.preserveDotWor(dest, tmp); err != nil {
 			os.RemoveAll(tmp)
 			return err
 		}

@@ -20,6 +20,13 @@ conflict, `usage.go`/the actual code behavior wins).
   call EnsureDefaultHost the same way, get this self-healing behavior too
   (files that still point to the correct path are left untouched; other
   admin edits are preserved).
+  Step 6 of the wizard is **the operator account**: the single unix user
+  that owns everything wor creates. Linux only (on macOS everything runs as
+  the login user). Whatever is chosen is recorded in `host.env` rather than
+  the personal `~/.wor/config`, because it describes the machine, not the
+  admin running the command; each run also sweeps up directories an earlier
+  operator account left behind. Leaving it empty is allowed and means files
+  stay owned by whoever runs `wor`.
 - `wor doctor` -- read-only system health check. Shows a ✓/⚠/✗ checklist for
   the environment, runtimes (Node.js/Go/Python/PHP/PHP-FPM), the active web
   server, databases (always optional), and other tools (git/zip/gzip, always
@@ -49,6 +56,16 @@ conflict, `usage.go`/the actual code behavior wins).
   anything and the renewal hook never fires. wor reports the gap and
   shows the command to check it, but never installs a schedule on its
   own.
+- `wor upgrade [--yes]` -- compare the running binary against the release
+  the download site currently publishes, show both, and install the newer
+  one once you confirm (`--yes` skips the confirmation). It asks
+  `download/version.php` rather than listing a directory, so the archive it
+  then fetches is an immutable versioned URL; installation is handed to the
+  `install.sh` inside that archive rather than reimplemented, so there is
+  only one tested install path. Replacing the running binary is safe --
+  `install(1)` unlinks the target before writing, so the running process
+  keeps going from the old inode. Not available on Windows (install.sh is a
+  unix shell script): download the release and replace the binary by hand.
 - `wor env` -- show the current config/environment values
 - `wor clean` -- remove host configs/PM2 processes/systemd units/`/etc/hosts`
   entries that have become orphaned (no domain/service references them
@@ -104,8 +121,10 @@ wor service remove <domain>/<service> [--cascade] [--yes]
 wor service start <domain>/<service>
 wor service stop <domain>/<service>
 wor service restart <domain>/<service>
+wor service reload <domain>/<service>
 wor service status
 wor service logs <domain>/<service> [--lines=100]
+wor service chown <domain>/<service> [<user>]
 ```
 
 `service add` **blocks immediately** if the runtime for the chosen template
@@ -147,6 +166,60 @@ end-to-end health.
 `service start`/`stop`/`restart`/`logs` error immediately if the specified
 domain/service does not exist (no more silently falling back to "a static
 service with nothing to do," as an old bug used to).
+
+`service reload` re-renders a pooled php service's php-fpm pool from its
+`.wor/php.ini`, validates it, reloads php-fpm and prints the settings now
+in force. It is **configuration only** and deliberately narrow: restarting
+a process is `wor service restart`, re-rendering a vhost is
+`wor host reload`, and one verb meaning three different amounts of
+disruption would be impossible to reason about. `wor deploy` does the same
+re-render as part of a deploy; this command exists for a settings-only
+change, and is the only way to apply `.wor/php.ini` to a service whose
+source is not a git repository (`wor deploy` requires one). A service with
+no php-fpm pool of its own is an error here, not a no-op -- it names the
+command that does apply instead.
+
+`service chown` hands one service's tree back to the account that should
+own it: the configured operator, or `<user>` if you name one. It changes
+the **owner only, never the group**, and re-grants the php-fpm pool
+afterwards from the group recorded for that pool -- so a `src/.env` at
+`0640` keeps the group the pool user's membership was granted against.
+Needs elevation. It repairs, it does not record: nothing is written to
+`services.config.json`, and there is deliberately no per-service owner,
+because wor's model is one operator account for the whole tree and a
+service owned by somebody else would be swept back by the next
+`wor setup`. What it fixes is a tree that has *drifted* -- files left by a
+root-run command, a CI rsync, or an admin who is not the operator.
+
+### Per-service PHP settings
+
+A php service with its own pool configures itself through two optional
+files in its own tree:
+
+```
+WOR_HOME/domains/<domain>/<service>/.wor/php.ini       PHP ini settings
+WOR_HOME/domains/<domain>/<service>/.wor/php-fpm.ini   pool tuning
+```
+
+`php.ini` holds PHP ini settings (`memory_limit`, `upload_max_filesize`,
+...); `php-fpm.ini` holds php-fpm pool directives (`pm.max_children` and
+friends). Two files because they are two different layers: the first
+becomes `php_value[...]` the application can still `ini_set()` past, the
+second is written into the pool as-is and governs the worker processes.
+
+Both are read by **wor, not by php** -- a php-fpm pool cannot include a
+php.ini of its own -- and both accept only an allowlist of keys, where a
+key outside it fails rather than being skipped. `wor deploy` applies
+them, `wor service reload` applies them on their own, and `wor info` /
+`wor diagnose` / `wor health` report a pool that has drifted from them.
+wor writes a `.example` file beside each one listing the keys it
+currently accepts.
+
+**The full rules -- what each file accepts, which keys are refused and
+why, and what happens under a service with no pool -- are in
+`docs/services.md`.** They are not repeated here: an allowlist explained
+in two places is an allowlist that will eventually be explained two
+different ways.
 
 ## wor run
 
@@ -258,6 +331,17 @@ has no `.env`, and the backup zip may not either because it filters by
 (use the repo's copy, discard the old one -- requires an extra
 confirmation).
 
+The same question is asked about `.wor`, and for the same reason: it holds
+this service's own wor configuration (the web-server snippets in
+`.wor/nginx` / `.wor/apache` and the PHP settings in `.wor/php.ini`), a
+fresh clone replaces the whole tree, and a repository that gitignores
+`.wor` is one whose backup zip does not contain it either. **Keep**
+(default) carries the current `.wor` into the new tree and sets the repo's
+copy aside as `.wor.new` -- wor cannot know which of two hand-written
+configs is the wanted one, and picking silently would be worse than leaving
+both on disk. **Delete** takes the repo's copy (or none) and requires an
+extra confirmation.
+
 After the clone, if the target is a registered service, it asks whether to
 deploy right away (delegating to `wor deploy --no-pull --force`), because a
 fresh clone has no `node_modules` / build output / go binary -- the service
@@ -294,6 +378,15 @@ correct process provider -> health-check after restart (PM2
 `--no-pull --force`), because in both cases the commit has not moved from
 deploy's point of view, yet the dependencies are exactly what is missing or
 stale.
+
+For a php service with its own pool, deploy also **re-renders that pool**
+from the tree it just put on disk, so an edit to `.wor/php.ini` takes
+effect as part of the normal deploy. The file is validated twice: once
+before the first side effect, so a typo stops the deploy while the tree is
+still untouched, and again at the re-render, because the pull itself can
+bring in a different php.ini. Either failure fails the whole deploy rather
+than shipping code against settings that could not be applied. For a
+settings-only change, use `wor service reload` instead.
 
 `rollback` hard-resets the source back to `origin/<branch>`, discarding all
 uncommitted changes (always backing up via `wor source backup` first). It
@@ -425,6 +518,11 @@ only -- node/go/python reverse-proxy services don't need file reads), a
 Resources section (host CPU%/Mem + this service's cpu/mem -- details under
 `wor health` below), and git status if the source is a git repo.
 
+For a php service with its own pool it also lists the settings that
+service's `.wor/php.ini` asks for, and marks them `NOT APPLIED` when the
+running pool carries something different -- the file and the pool are two
+different places, so neither on its own tells the whole story.
+
 ## Health
 
 ```
@@ -524,6 +622,16 @@ a path containing `/domains/` that is not under the current WOR_HOME, it
 concludes "a config from an old installation is still active" instead of a
 generic permission issue.
 
+A pooled php service also gets a `php settings` check comparing its
+`.wor/php.ini` against the pool config actually on disk. Both findings are
+warnings rather than failures -- neither stops the service from serving --
+but both are invisible from either side alone: a php.ini that no longer
+parses blocks the next deploy with no sign of it today, and a pool that has
+drifted from the file means the service is running settings nobody can see
+by reading the repository. Read-only and non-elevating like everything else
+here, so a pool file this process cannot read is reported as unchecked
+rather than assumed correct.
+
 For sweeping the whole machine for broken services, see `wor health`
 (formerly `wor diagnose --all`, split out into its own command).
 
@@ -582,3 +690,16 @@ wor goto [.|./<path>|<domain>[/<service>]]   (shell function)
 `wor help`/`wor <no command>`: `WOR_ENV`, `WOR_HOME`, and the config file
 in use. These are set via `wor setup` or edited directly in the config
 file/`host.env`.
+
+Two more are worth knowing about:
+
+- `PHP_FPM_ENDPOINT` -- the shared, host-wide php-fpm endpoint used by php
+  services created with `--no-php-pool`, by services that predate
+  per-service pools, and on Windows. Normally written to `host.env` by
+  `wor setup`; a process environment variable of the same name overrides
+  it, as it does for every configured value.
+- `WOR_DOWNLOAD_BASE` -- overrides the download site `wor upgrade` asks.
+  Read from the process environment only, and there for development: it
+  lets the command be pointed at a local `php -S` while working on that
+  site, which is otherwise impossible to exercise without publishing a
+  real release.

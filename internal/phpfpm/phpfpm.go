@@ -247,9 +247,6 @@ func ResolveVersion(number string) (Version, bool) {
 	return Version{}, false
 }
 
-// DefaultMaxChildren is used when Pool.MaxChildren is left at zero.
-const DefaultMaxChildren = 5
-
 // Pool describes one per-service php-fpm pool wor manages.
 type Pool struct {
 	Domain  string
@@ -269,7 +266,13 @@ type Pool struct {
 	// login user anyway).
 	ListenOwner string
 	ListenGroup string
-	MaxChildren int // pm.max_children; DefaultMaxChildren if <= 0
+	// Settings and PoolSettings are this service's own two `.wor`
+	// files, already validated against their allowlists: PHP ini
+	// overrides from php.ini (settings.go) and process-manager tuning
+	// from php-fpm.ini (poolsettings.go). LoadSettings and
+	// LoadPoolSettings are the only ways to obtain them.
+	Settings     []Setting
+	PoolSettings []PoolSetting
 }
 
 // SocketPath returns the unix socket path wor listens this pool on.
@@ -283,11 +286,16 @@ func PoolFilePath(v Version, domain, service string) string {
 	return filepath.Join(v.PoolDir, PoolName(domain, service)+".conf")
 }
 
-func poolFileContent(p Pool) string {
-	maxChildren := p.MaxChildren
-	if maxChildren <= 0 {
-		maxChildren = DefaultMaxChildren
-	}
+// PoolFileContent renders p's pool config file, in three blocks: the
+// pool's identity, which is wor's alone; the process manager, which the
+// service tunes through php-fpm.ini; and the PHP ini overrides from
+// php.ini. Identity comes first and the two service-supplied blocks
+// follow, so nothing a service sets can precede the directives that
+// decide who the pool runs as.
+//
+// Exported because it is the answer to "what would wor write for this
+// service", which PoolUpToDate compares against and callers can show.
+func PoolFileContent(p Pool) string {
 	name := PoolName(p.Domain, p.Service)
 	sock := SocketPath(p.Version, p.Domain, p.Service)
 	listenOwner, listenGroup := p.ListenOwner, p.ListenGroup
@@ -304,40 +312,73 @@ listen = %s
 listen.owner = %s
 listen.group = %s
 listen.mode = 0660
-pm = dynamic
-pm.max_children = %d
-pm.start_servers = 2
-pm.min_spare_servers = 1
-pm.max_spare_servers = 3
-`, name, p.User, p.Group, sock, listenOwner, listenGroup, maxChildren)
+%s
+%s`, name, p.User, p.Group, sock, listenOwner, listenGroup,
+		strings.Join(PoolSettingLines(p.PoolSettings), "\n"),
+		renderSettings(p.Settings))
 }
 
 // WritePool writes p's pool config file, validates the resulting
 // php-fpm config with `-t` before touching anything live, and reloads
-// php-fpm only if validation passed. On validation failure the
-// just-written pool file is removed again, so a bad pool config is
-// never left half-applied (and never risks taking down every other
-// pool sharing the same php-fpm master on the next real reload). The
-// same rollback applies if reload() itself fails: a config the running
-// master never actually picked up has no business lingering on disk
-// looking like a live pool.
+// php-fpm only if validation passed. On failure the pool file is put
+// back the way it was, so a bad pool config is never left half-applied
+// (and never risks taking down every other pool sharing the same
+// php-fpm master on the next real reload). The same rollback applies if
+// reload() itself fails: a config the running master never actually
+// picked up has no business lingering on disk looking like a live pool.
+//
+// "The way it was" means restoring the previous contents when this pool
+// already had a config file, and removing the file when it did not.
+// That distinction matters because WritePool is no longer only a
+// create-time call: `wor deploy` re-renders an existing pool to pick up
+// the service's .wor/php.ini, and rolling that back by deleting the
+// file would turn one bad setting into a service with no pool at all.
 func WritePool(p Pool) error {
 	if osutil.IsWindows() {
 		return fmt.Errorf("per-service php-fpm pools are not supported on Windows")
 	}
 	path := PoolFilePath(p.Version, p.Domain, p.Service)
-	if err := osutil.WriteFilePrivileged(path, []byte(poolFileContent(p))); err != nil {
+	previous, hasPrevious := readPoolFile(path)
+	if err := osutil.WriteFilePrivileged(path, []byte(PoolFileContent(p))); err != nil {
 		return err
 	}
 	if err := testConfig(p.Version); err != nil {
-		osutil.RemoveFilePrivileged(path)
+		restorePoolFile(path, previous, hasPrevious)
 		return fmt.Errorf("php-fpm config test failed after writing pool %s, rolled back: %w", PoolName(p.Domain, p.Service), err)
 	}
 	if err := reload(p.Version); err != nil {
-		osutil.RemoveFilePrivileged(path)
+		restorePoolFile(path, previous, hasPrevious)
 		return fmt.Errorf("php-fpm reload failed after writing pool %s, rolled back: %w", PoolName(p.Domain, p.Service), err)
 	}
 	return nil
+}
+
+// readPoolFile returns the pool file's current contents so WritePool
+// can put them back if the new ones don't validate. An unreadable
+// existing file reports false, the same as a missing one: without its
+// contents there is nothing to restore, and leaving a config that fails
+// `-t` in place would break the next reload of the shared master for
+// every pool under it -- so removing it is the lesser harm.
+func readPoolFile(path string) (data []byte, ok bool) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, false
+	}
+	data, err := osutil.ReadFilePrivileged(path)
+	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
+// restorePoolFile undoes WritePool's write. Best-effort: it runs on a
+// path that is already returning an error, and the caller reports that
+// error either way.
+func restorePoolFile(path string, previous []byte, hasPrevious bool) {
+	if !hasPrevious {
+		osutil.RemoveFilePrivileged(path)
+		return
+	}
+	osutil.WriteFilePrivileged(path, previous)
 }
 
 // RemovePool removes domain/service's pool file (if present) and

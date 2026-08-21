@@ -44,7 +44,7 @@ func TestPoolFileContent(t *testing.T) {
 		User:    "wor_example.com_web",
 		Group:   "wor_example.com_web",
 	}
-	content := poolFileContent(p)
+	content := PoolFileContent(p)
 	for _, want := range []string{
 		"[wor_example.com_web]",
 		"user = wor_example.com_web",
@@ -54,7 +54,7 @@ func TestPoolFileContent(t *testing.T) {
 		"pm.max_children = 5",
 	} {
 		if !strings.Contains(content, want) {
-			t.Errorf("poolFileContent() missing %q, got:\n%s", want, content)
+			t.Errorf("PoolFileContent() missing %q, got:\n%s", want, content)
 		}
 	}
 }
@@ -75,7 +75,7 @@ func TestPoolFileContentListenOwner(t *testing.T) {
 		ListenOwner: "www-data",
 		ListenGroup: "www-data",
 	}
-	content := poolFileContent(p)
+	content := PoolFileContent(p)
 	for _, want := range []string{
 		"user = wor_example.com_web",
 		"group = wor_example.com_web",
@@ -83,15 +83,26 @@ func TestPoolFileContentListenOwner(t *testing.T) {
 		"listen.group = www-data",
 	} {
 		if !strings.Contains(content, want) {
-			t.Errorf("poolFileContent() missing %q, got:\n%s", want, content)
+			t.Errorf("PoolFileContent() missing %q, got:\n%s", want, content)
 		}
 	}
 }
 
 func TestPoolFileContentCustomMaxChildren(t *testing.T) {
-	p := Pool{Domain: "d", Service: "s", Version: Version{SockDir: "/run/php"}, MaxChildren: 20}
-	if !strings.Contains(poolFileContent(p), "pm.max_children = 20") {
-		t.Error("expected custom MaxChildren to be honored")
+	settings, err := ParsePoolSettings([]byte("pm.max_children = 20"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Pool{Domain: "d", Service: "s", Version: Version{SockDir: "/run/php"}, PoolSettings: settings}
+	content := PoolFileContent(p)
+	if !strings.Contains(content, "pm.max_children = 20") {
+		t.Errorf("expected the override to be honored, got:\n%s", content)
+	}
+	// The default it replaced must be gone, not merely outranked: a
+	// pool file carrying both values makes the reader work out php-fpm's
+	// precedence rules to tell which one is live.
+	if strings.Contains(content, "pm.max_children = 5") {
+		t.Errorf("the default pm.max_children was left in place alongside the override:\n%s", content)
 	}
 }
 

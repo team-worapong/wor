@@ -931,6 +931,7 @@ func (a *App) diagProcessPHP(d *diagnosis, domain string, svc *domainmodel.Servi
 			"wor doctor")
 		return
 	}
+	a.diagPHPSettings(d, domain, svc, v)
 	if phpfpm.PoolAlive(v, domain, svc.Name) {
 		d.procRunning = true
 		// The pool answering *wor* is not the same as it answering the
@@ -980,6 +981,44 @@ func (a *App) diagProcessPHP(d *diagnosis, domain string, svc *domainmodel.Servi
 		"the service's php-fpm pool did not come up under a running master (bad pool config?)",
 		"wor run",
 		fmt.Sprintf("sudo %s -t   # validate the php-fpm config", v.FPMBin))
+}
+
+// diagPHPSettings checks a pooled php service's .wor/php.ini against
+// the pool config that is actually on disk.
+//
+// Both findings are warnings, not failures: neither stops the service
+// from serving, and diagnose's job is to explain a broken service. But
+// both are invisible from either side alone -- an unreadable php.ini
+// blocks the next deploy with no sign of it today, and a pool that has
+// drifted from the file means the service is running settings nobody
+// can see by reading the repository. Silence about that is exactly the
+// silent-drop this feature was built to avoid.
+//
+// Read-only and non-elevating, per diagnose's rule: a pool file this
+// process cannot read simply goes unchecked.
+func (a *App) diagPHPSettings(d *diagnosis, domain string, svc *domainmodel.Service, v phpfpm.Version) {
+	state := a.readPHPSettingsState(domain, svc.Name, svc, v)
+	if state.Err != nil {
+		d.warn("php settings", fmt.Sprintf("a .wor settings file is invalid, so the next deploy of this service will fail: %s", state.Err))
+		return
+	}
+	if !state.Configured() {
+		return
+	}
+	if !state.PoolRead {
+		d.warn("php settings", fmt.Sprintf("this service has .wor settings but %s could not be read, so wor cannot tell whether they are applied", phpfpm.PoolFilePath(v, domain, svc.Name)))
+		return
+	}
+	if state.Drifted() {
+		for _, f := range state.Files {
+			if len(f.Lines) > 0 {
+				d.addEvidence("php settings", fmt.Sprintf("%s asks for: %s", f.Path, strings.Join(f.Lines, "; ")))
+			}
+		}
+		d.warn("php settings", fmt.Sprintf("the running pool does not match this service's .wor settings -- apply them with: wor service reload %s/%s", domain, svc.Name))
+		return
+	}
+	d.pass("php settings", "this service's .wor settings are applied to the pool")
 }
 
 // endpointAccepting dials a PHP_FPM_ENDPOINT value ("127.0.0.1:9000"
@@ -1804,6 +1843,7 @@ func (a *App) cmdHealth(args []string) (bool, error) {
 		// 0 so cron/monitoring only alerts on real failures.
 		probeRan := httpURL != "" || httpNote != ""
 		certLine, certProblem := a.certificateHealth(ref)
+		phpSettingsLine, phpSettingsProblem := a.phpSettingsHealth(ref)
 		level := 0
 		switch {
 		case !svcOK:
@@ -1812,7 +1852,7 @@ func (a *App) cmdHealth(args []string) (bool, error) {
 		case httpCode == "404" || (probeRan && httpURL == ""):
 			level = 1
 			warned++
-		case certProblem:
+		case certProblem || phpSettingsProblem:
 			// A certificate that is expiring, expired, or whose last
 			// sync failed is a warning, not a failure: the site is
 			// still serving right now, and the exit code has to stay 0
@@ -1874,6 +1914,13 @@ func (a *App) cmdHealth(args []string) (bool, error) {
 				mark = tag(useColor, ansiYellow, "⚠", "[warn]")
 			}
 			fmt.Fprintf(a.Out, "    %s %s\n", mark, certLine)
+		}
+		if phpSettingsLine != "" {
+			mark := tag(useColor, ansiGreen, "✓", "[ok]")
+			if phpSettingsProblem {
+				mark = tag(useColor, ansiYellow, "⚠", "[warn]")
+			}
+			fmt.Fprintf(a.Out, "    %s %s\n", mark, phpSettingsLine)
 		}
 
 		switch {

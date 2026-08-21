@@ -417,14 +417,13 @@ func (s *Store) GetServicePHPVersion(domain, service string) string {
 }
 
 // SetServicePHPFPM records that domain/service now has its own
-// dedicated php-fpm pool: the PHP-FPM version it runs under, the group
-// its pool user was granted document-root access through (see
-// internal/phpfpm.GrantGroupAccess), and an optional pm.max_children
-// override (0 keeps phpfpm.DefaultMaxChildren). Callers should only
-// call this after the pool, its unix user, and its group access have
-// all actually been created -- see Service.PHPVersion's doc comment
-// for why this is opt-in rather than applied retroactively.
-func (s *Store) SetServicePHPFPM(domain, service, version, poolGroup string, maxChildren int) error {
+// dedicated php-fpm pool: the PHP-FPM version it runs under and the
+// group its pool user was granted document-root access through (see
+// internal/phpfpm.GrantGroupAccess). Callers should only call this
+// after the pool, its unix user, and its group access have all actually
+// been created -- see Service.PHPVersion's doc comment for why this is
+// opt-in rather than applied retroactively.
+func (s *Store) SetServicePHPFPM(domain, service, version, poolGroup string) error {
 	cfg, err := s.LoadServices(domain)
 	if err != nil {
 		return err
@@ -435,7 +434,6 @@ func (s *Store) SetServicePHPFPM(domain, service, version, poolGroup string, max
 	}
 	svc.PHPVersion = version
 	svc.PHPPoolGroup = poolGroup
-	svc.PHPMaxChildren = maxChildren
 	return s.SaveServices(cfg)
 }
 
@@ -455,7 +453,6 @@ func (s *Store) ClearServicePHPFPM(domain, service string) error {
 	}
 	svc.PHPVersion = ""
 	svc.PHPPoolGroup = ""
-	svc.PHPMaxChildren = 0
 	return s.SaveServices(cfg)
 }
 

@@ -246,11 +246,22 @@ func (a *App) setupPHPPool(domain, service, phpVersion string) error {
 		}
 	}
 
+	// A service tree cloned from a repository can already carry .wor
+	// settings files, so the very first pool file wor writes has to
+	// honor them -- otherwise they would not apply until the first
+	// deploy. An invalid file fails service creation here, before the
+	// pool exists, rather than leaving a pool that ignores it.
+	settings, poolSettings, err := a.loadPHPSettings(domain, service)
+	if err != nil {
+		return err
+	}
+
 	pool := phpfpm.Pool{Domain: domain, Service: service, Version: version, User: poolUser, Group: group,
-		ListenOwner: listenOwner, ListenGroup: listenOwner}
+		ListenOwner: listenOwner, ListenGroup: listenOwner, Settings: settings, PoolSettings: poolSettings}
 	if err := phpfpm.WritePool(pool); err != nil {
 		return err
 	}
+	a.writePHPSettingsExamples(domain, service, version)
 
 	// php-fpm only chown()s a pool's socket when it BINDS it: if a
 	// socket for this pool already existed (stale file from an older
@@ -274,7 +285,7 @@ func (a *App) setupPHPPool(domain, service, phpVersion string) error {
 		}
 	}
 
-	return a.Store.SetServicePHPFPM(domain, service, phpVersion, group, 0)
+	return a.Store.SetServicePHPFPM(domain, service, phpVersion, group)
 }
 
 // phpPoolDocRoot is the directory a per-service php-fpm pool must be
@@ -748,6 +759,12 @@ func (a *App) cmdService(args []string) error {
 			return systemd.Restart(domain, service)
 		}
 		return nil
+
+	case "reload":
+		if err := a.requireServiceExists(domain, service); err != nil {
+			return err
+		}
+		return a.cmdServiceReload(domain, service)
 
 	case "logs":
 		if err := a.requireServiceExists(domain, service); err != nil {

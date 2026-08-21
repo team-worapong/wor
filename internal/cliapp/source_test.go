@@ -2,8 +2,11 @@ package cliapp
 
 import (
 	"archive/zip"
+	"bufio"
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"wor/internal/config"
@@ -144,5 +147,119 @@ func TestSourceBackupGitIgnoreDisableOverride(t *testing.T) {
 	}
 	if !containsName(names, "debug.log") {
 		t.Errorf("--gitignore=disable should include debug.log, got entries: %v", names)
+	}
+}
+
+// newDotWorTestApp builds an App whose prompts read from answers, plus
+// the two directories preserveDotWor works between: dest (the service
+// tree about to be replaced) and tmp (the fresh clone that will take
+// its place).
+func newDotWorTestApp(t *testing.T, answers string) (app *App, dest, tmp string) {
+	t.Helper()
+	app = newTestServiceApp(t)
+	app.In = bufio.NewReader(strings.NewReader(answers))
+	root := t.TempDir()
+	dest, tmp = filepath.Join(root, "dest"), filepath.Join(root, "tmp")
+	for _, dir := range []string{dest, tmp} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return app, dest, tmp
+}
+
+func writeDotWorFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	path := filepath.Join(dir, ".wor", name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Keeping .wor is the default, because a clone replaces the whole tree
+// and the pre-clone backup honors .gitignore -- so pressing enter must
+// never be the answer that loses the admin's own configuration.
+func TestPreserveDotWorKeepsByDefault(t *testing.T) {
+	app, dest, tmp := newDotWorTestApp(t, "\n")
+	writeDotWorFile(t, dest, "php.ini", "memory_limit = 512M\n")
+
+	if err := app.preserveDotWor(dest, tmp); err != nil {
+		t.Fatalf("preserveDotWor() error = %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(tmp, ".wor", "php.ini"))
+	if err != nil {
+		t.Fatalf("current .wor was not carried into the new tree: %v", err)
+	}
+	if string(got) != "memory_limit = 512M\n" {
+		t.Errorf("php.ini = %q, want the current tree's copy", got)
+	}
+}
+
+// When both trees have a .wor, wor cannot know which hand-written
+// config is the wanted one, so the repo's copy is set aside rather than
+// merged or silently dropped.
+func TestPreserveDotWorSetsRepoCopyAside(t *testing.T) {
+	app, dest, tmp := newDotWorTestApp(t, "1\n")
+	writeDotWorFile(t, dest, "php.ini", "memory_limit = 512M\n")
+	writeDotWorFile(t, tmp, "php.ini", "memory_limit = 1G\n")
+
+	if err := app.preserveDotWor(dest, tmp); err != nil {
+		t.Fatalf("preserveDotWor() error = %v", err)
+	}
+
+	live, err := os.ReadFile(filepath.Join(tmp, ".wor", "php.ini"))
+	if err != nil || string(live) != "memory_limit = 512M\n" {
+		t.Errorf("live php.ini = %q (err %v), want the current tree's copy", live, err)
+	}
+	saved, err := os.ReadFile(filepath.Join(tmp, ".wor.new", "php.ini"))
+	if err != nil || string(saved) != "memory_limit = 1G\n" {
+		t.Errorf(".wor.new/php.ini = %q (err %v), want the repo's copy", saved, err)
+	}
+}
+
+// Deleting is destructive, so it takes the explicit choice AND the
+// confirmation -- and a "no" at the confirmation returns to the menu
+// rather than falling through to the delete.
+func TestPreserveDotWorDeleteNeedsConfirmation(t *testing.T) {
+	app, dest, tmp := newDotWorTestApp(t, "2\nn\n1\n")
+	writeDotWorFile(t, dest, "php.ini", "memory_limit = 512M\n")
+
+	if err := app.preserveDotWor(dest, tmp); err != nil {
+		t.Fatalf("preserveDotWor() error = %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, ".wor", "php.ini")); err != nil {
+		t.Errorf("declining the confirmation should have kept .wor: %v", err)
+	}
+}
+
+func TestPreserveDotWorDeletes(t *testing.T) {
+	app, dest, tmp := newDotWorTestApp(t, "2\ny\n")
+	writeDotWorFile(t, dest, "php.ini", "memory_limit = 512M\n")
+
+	if err := app.preserveDotWor(dest, tmp); err != nil {
+		t.Fatalf("preserveDotWor() error = %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, ".wor")); !os.IsNotExist(err) {
+		t.Errorf("the new tree should have no .wor, stat err = %v", err)
+	}
+}
+
+// A service tree without a .wor must not prompt at all -- `wor source
+// clone` is used on plenty of them.
+func TestPreserveDotWorSilentWhenAbsent(t *testing.T) {
+	app, dest, tmp := newDotWorTestApp(t, "")
+
+	if err := app.preserveDotWor(dest, tmp); err != nil {
+		t.Fatalf("preserveDotWor() error = %v", err)
+	}
+
+	if out := app.Err.(*bytes.Buffer).String(); out != "" {
+		t.Errorf("expected no prompt when there is no .wor, got %q", out)
 	}
 }

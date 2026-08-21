@@ -37,8 +37,8 @@ type Service struct {
 	DomainType   string            `json:"domainType,omitempty"`
 	HostsEntries []string          `json:"hostsEntries,omitempty"`
 
-	// PHPVersion, PHPPoolGroup, and PHPMaxChildren are only meaningful
-	// for php-template services, and only once this service has its own
+	// PHPVersion and PHPPoolGroup are only meaningful for php-template
+	// services, and only once this service has its own
 	// per-service php-fpm pool (see internal/phpfpm). PHPVersion empty
 	// means this php service has no dedicated pool and still falls back
 	// to the host-wide PHP_FPM_ENDPOINT config value -- the deliberate
@@ -50,9 +50,14 @@ type Service struct {
 	// read access to (internal/phpfpm.GrantGroupAccess), so later
 	// pool/removal operations don't need to re-stat the document root
 	// and can't drift from what was actually granted at creation time.
-	PHPVersion     string `json:"phpVersion,omitempty"`
-	PHPPoolGroup   string `json:"phpPoolGroup,omitempty"`
-	PHPMaxChildren int    `json:"phpMaxChildren,omitempty"`
+	//
+	// Pool tuning (pm.max_children and friends) is deliberately NOT
+	// recorded here: it lives in the service's own .wor/php-fpm.ini, so
+	// there is exactly one place to read it from and one place to change
+	// it. A copy in this file would be a second source for the same
+	// value, and the two would eventually disagree.
+	PHPVersion   string `json:"phpVersion,omitempty"`
+	PHPPoolGroup string `json:"phpPoolGroup,omitempty"`
 }
 
 // UsesPerServicePHPFPM reports whether svc has its own dedicated

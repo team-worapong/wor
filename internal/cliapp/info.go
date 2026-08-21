@@ -66,7 +66,7 @@ func (a *App) cmdInfo(args []string) error {
 
 	fmt.Fprintln(a.Out)
 	fmt.Fprintln(a.Out, "Process:")
-	printProcessInfo(a, domain, service, svc.Type, svc.PHPVersion, svc.PHPPoolGroup)
+	printProcessInfo(a, domain, service, svc)
 
 	// Same Resources section as `wor health`, scoped to this one
 	// service (owner request 2026-07-07). pm2's live numbers need one
@@ -117,7 +117,8 @@ func hostSSLSuffix(a *App, host string) string {
 // same way `wor service status` (cmdServiceStatus) does -- pm2/systemd
 // process dumps, or php-fpm pool detail for dedicated pools, or a
 // plain "no process" note for static/legacy-fpm services.
-func printProcessInfo(a *App, domain, service, svcType, phpVersion, phpPoolGroup string) {
+func printProcessInfo(a *App, domain, service string, svc *domainmodel.Service) {
+	svcType, phpVersion, phpPoolGroup := svc.Type, svc.PHPVersion, svc.PHPPoolGroup
 	switch domainmodel.ProcessProviderFor(svcType) {
 	case "pm2":
 		name := pm2.Name(domain, service)
@@ -162,6 +163,11 @@ func printProcessInfo(a *App, domain, service, svcType, phpVersion, phpPoolGroup
 		if phpPoolGroup != "" {
 			fmt.Fprintf(a.Out, "  Pool group: %s\n", phpPoolGroup)
 		}
+		// The per-service PHP settings are rendered into that pool file
+		// from a file in the service tree, so neither location on its
+		// own tells the whole story -- show what the service asks for,
+		// and say so when the running pool has not caught up.
+		a.printPHPSettingsInfo(domain, service, svc, v)
 	}
 }
 

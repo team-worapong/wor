@@ -51,7 +51,7 @@ func TestReapplyPHPPoolAccessWarnsWhenPoolGroupMissing(t *testing.T) {
 		t.Skip("per-service pool users are Linux-only (see setupPHPPool)")
 	}
 	app := newPoolAccessTestApp(t, "shop-example-com", "site", "php")
-	if err := app.Store.SetServicePHPFPM("shop-example-com", "site", "8.3", "", 0); err != nil {
+	if err := app.Store.SetServicePHPFPM("shop-example-com", "site", "8.3", ""); err != nil {
 		t.Fatalf("SetServicePHPFPM: %v", err)
 	}
 
@@ -71,7 +71,7 @@ func TestReapplyPHPPoolAccessStopsAtAMissingDocumentRoot(t *testing.T) {
 		t.Skip("per-service pool users are Linux-only (see setupPHPPool)")
 	}
 	app := newPoolAccessTestApp(t, "shop-example-com", "site", "php")
-	if err := app.Store.SetServicePHPFPM("shop-example-com", "site", "8.3", "wor_shop-example-com_site", 0); err != nil {
+	if err := app.Store.SetServicePHPFPM("shop-example-com", "site", "8.3", "wor_shop-example-com_site"); err != nil {
 		t.Fatalf("SetServicePHPFPM: %v", err)
 	}
 
@@ -101,7 +101,7 @@ func TestReapplyPHPPoolAccessCoversEveryServiceOnABareDomain(t *testing.T) {
 		t.Fatalf("AddService: %v", err)
 	}
 	for _, svc := range []string{"site", "blog"} {
-		if err := app.Store.SetServicePHPFPM("shop-example-com", svc, "8.3", "", 0); err != nil {
+		if err := app.Store.SetServicePHPFPM("shop-example-com", svc, "8.3", ""); err != nil {
 			t.Fatalf("SetServicePHPFPM(%s): %v", svc, err)
 		}
 	}
