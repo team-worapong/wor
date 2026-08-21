@@ -5,6 +5,6 @@
 // publishedReleaseTag() in public/lib/releases.php; served by
 // public/download/version.php, which checks the archive is really on
 // disk before handing this out.
-const WOR_RELEASE_TAG     = 'v1.0.2-b64';
+const WOR_RELEASE_TAG     = 'v1.0.2-b67';
 const WOR_RELEASE_VERSION = '1.0.2';
-const WOR_RELEASE_BUILD   = 64;
+const WOR_RELEASE_BUILD   = 67;
