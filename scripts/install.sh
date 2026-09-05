@@ -12,13 +12,21 @@
 #   bin/wor-windows-amd64.exe
 #   install.sh
 #
-# It does NOT build wor -- it installs the OS packages every wor
-# service template (static/node/go/python/php) needs on a fresh
-# server, then copies the matching prebuilt binary for this machine's
-# OS/arch into place.
+# It does NOT build wor. On Linux -- the OS wor hosts sites on -- it
+# installs the OS packages every wor service template
+# (static/node/go/python/php) needs on a fresh server, and then copies
+# the matching prebuilt binary into place. On macOS it does only the
+# second half: a Mac is where an operator runs the wor CLI, not a host
+# wor deploys to, so there are no runtimes to install (see the PLATFORM
+# block below).
 #
 # Usage:
 #   sudo ./install.sh [options]
+#
+# Both the OS and the CPU architecture are detected here (uname -s /
+# uname -m) and there is deliberately no flag to override either: one
+# release archive ships every target, and a hand-picked mismatch only
+# surfaces much later as "Exec format error".
 #
 # The Linux distro family is auto-detected from /etc/os-release -- no
 # flag needed. Only Debian/Ubuntu (apt) is actually implemented right
@@ -54,8 +62,10 @@ usage() {
 Usage:
   sudo ./install.sh [options]
 
-The Linux distro is auto-detected from /etc/os-release -- no flag
-needed. Only Debian/Ubuntu (apt) is implemented right now.
+The OS and CPU architecture are auto-detected; there is no flag for
+either. On Linux the distro is detected from /etc/os-release -- only
+Debian/Ubuntu (apt) is implemented right now. On macOS only the wor
+binary is installed and the options below do not apply.
 
 Options:
   --host-provider=NAME     nginx or apache (default: nginx)
@@ -144,16 +154,73 @@ case "$HOST_PROVIDER" in
     ;;
 esac
 
-# ---- OS family auto-detection ------------------------------------------
+# ---- platform detection -------------------------------------------------
 
-# ID/ID_LIKE/PRETTY_NAME come from sourcing /etc/os-release below.
+# PLATFORM decides two things: which of the packaged binaries gets
+# installed (bin/wor-<platform>-<arch>), and whether the OS-package phase
+# below runs at all.
+#
+# macOS is deliberately binary-only. wor hosts sites on Linux -- systemd
+# units, nginx/apache vhosts, php-fpm pools -- and a Mac is not that: it
+# is where an operator runs the wor CLI to drive those hosts. Installing
+# a parallel set of runtimes through Homebrew would be a second,
+# untested install path for a job this script was never asked to do.
+#
+# The label is "macos", not Go's "darwin", because that is what
+# scripts/build.sh names the binaries in bin/.
+case "$(uname -s)" in
+  Linux)  PLATFORM="linux" ;;
+  Darwin) PLATFORM="macos" ;;
+  *)
+    echo "ERROR: unsupported OS: $(uname -s)" >&2
+    echo "This installer handles Linux and macOS. On Windows, put" >&2
+    echo "bin/wor-windows-amd64.exe on your PATH yourself." >&2
+    exit 1
+    ;;
+esac
+
+# The options parsed above all describe a Linux host's packages. This
+# warns rather than fails: `wor upgrade` runs this script with no options
+# at all, and refusing an otherwise valid install over an irrelevant flag
+# would be a worse outcome than saying plainly that it did nothing.
+if [ "$PLATFORM" = "macos" ]; then
+  if [ "$WITH_MYSQL" -eq 1 ] || [ "$WITH_POSTGRES" -eq 1 ] || [ "$WITH_REDIS" -eq 1 ] ||
+     [ "$SKIP_SSL" -eq 1 ] || [ "$HOST_PROVIDER" != "nginx" ]; then
+    echo "NOTE: --host-provider/--with-*/--skip-ssl describe a Linux host and are"
+    echo "      ignored on macOS, where this script only installs the wor binary."
+    echo
+  fi
+fi
+
+# operator_home / operator_shell look up $SUDO_USER's home directory and
+# login shell -- used further down to decide whose rc file to offer the
+# `wor shell-init` line to. Split by platform because getent(1) is
+# glibc's and does not exist on macOS, where those same two fields live
+# in Directory Services and are read with dscl(1). Both print nothing
+# when the user cannot be looked up, which every caller already treats as
+# "unknown".
+operator_home() {
+  case "$PLATFORM" in
+    linux) getent passwd "$1" 2>/dev/null | cut -d: -f6 ;;
+    macos) dscl . -read "/Users/$1" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: //p' ;;
+  esac
+}
+
+operator_shell() {
+  case "$PLATFORM" in
+    linux) getent passwd "$1" 2>/dev/null | cut -d: -f7 ;;
+    macos) dscl . -read "/Users/$1" UserShell 2>/dev/null | sed -n 's/^UserShell: //p' ;;
+  esac
+}
+
+# ---- Linux distro family auto-detection --------------------------------
+
+# ID/ID_LIKE/PRETTY_NAME come from sourcing /etc/os-release, which only
+# Linux has; on macOS they stay empty and so does OS_FAMILY.
 ID=""
 ID_LIKE=""
 PRETTY_NAME=""
-if [ -r /etc/os-release ]; then
-  # shellcheck disable=SC1091
-  . /etc/os-release
-fi
+OS_FAMILY=""
 
 # id_like_has FAMILY checks both ID and the (possibly multi-value)
 # ID_LIKE field, since derivatives set ID to their own name and rely on
@@ -169,31 +236,43 @@ id_like_has() {
   return 1
 }
 
-OS_FAMILY="unknown"
-if id_like_has debian; then
-  OS_FAMILY="debian"
-elif id_like_has rhel || id_like_has fedora || id_like_has centos; then
-  OS_FAMILY="rhel"
-fi
+if [ "$PLATFORM" = "linux" ]; then
+  if [ -r /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+  fi
 
-if [ "$OS_FAMILY" = "unknown" ]; then
-  echo "ERROR: auto-detected OS is '${PRETTY_NAME:-${ID:-unknown}}', which this" >&2
-  echo "installer doesn't recognize as Debian/Ubuntu or RHEL/CentOS family." >&2
-  echo "Install the runtimes manually instead (see docs/services.md for the full" >&2
-  echo "list wor needs: git, go, node+npm+pm2, python3+pip, php-fpm, nginx/apache)" >&2
-  echo "and then just place the matching bin/wor-<os>-<arch> yourself." >&2
-  exit 1
+  OS_FAMILY="unknown"
+  if id_like_has debian; then
+    OS_FAMILY="debian"
+  elif id_like_has rhel || id_like_has fedora || id_like_has centos; then
+    OS_FAMILY="rhel"
+  fi
+
+  if [ "$OS_FAMILY" = "unknown" ]; then
+    echo "ERROR: auto-detected OS is '${PRETTY_NAME:-${ID:-unknown}}', which this" >&2
+    echo "installer doesn't recognize as Debian/Ubuntu or RHEL/CentOS family." >&2
+    echo "Install the runtimes manually instead (see docs/services.md for the full" >&2
+    echo "list wor needs: git, go, node+npm+pm2, python3+pip, php-fpm, nginx/apache)" >&2
+    echo "and then just place the matching bin/wor-<os>-<arch> yourself." >&2
+    exit 1
+  fi
 fi
 
 # ---- root check ---------------------------------------------------------
 
 if [ "$(id -u)" -ne 0 ]; then
-  echo "ERROR: this script installs system packages and must be run as root." >&2
+  echo "ERROR: this script writes to ${INSTALL_DIR} (and, on Linux, installs system" >&2
+  echo "packages), so it must be run as root." >&2
   echo "Re-run as: sudo ./install.sh ..." >&2
   exit 1
 fi
 
-echo "==> Detected: ${PRETTY_NAME:-${ID:-unknown}} (family: $OS_FAMILY)"
+if [ "$PLATFORM" = "linux" ]; then
+  echo "==> Detected: ${PRETTY_NAME:-${ID:-unknown}} (family: $OS_FAMILY)"
+else
+  echo "==> Detected: macOS -- installing the wor binary only, no OS packages."
+fi
 
 # ---- detect + optionally remove a pre-existing wor installation --------
 
@@ -210,7 +289,7 @@ echo "==> Detected: ${PRETTY_NAME:-${ID:-unknown}} (family: $OS_FAMILY)"
 # to whoever actually runs `wor` day to day.
 OPERATOR_HOME=""
 if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
-  OPERATOR_HOME="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)"
+  OPERATOR_HOME="$(operator_home "$SUDO_USER" || true)"
 fi
 
 OLD_CONFIG=""
@@ -229,12 +308,13 @@ fi
 # installed, and install.sh is just being re-run to update it to a
 # newer release". Without this check, an existing config + WOR_HOME
 # look identical in both cases, so every routine update re-run would
-# re-ask the same migration questions forever. A compiled Go binary
-# starts with the 4-byte ELF magic number; the old shell-script
-# wor-cli is a plain text file starting with a #! shebang line --
-# reading the first 4 bytes is enough to tell them apart without
-# depending on the external `file` command, which isn't guaranteed
-# present on a minimal image.
+# re-ask the same migration questions forever. The old shell-script
+# wor-cli is a plain text file starting with a #! shebang line, and no
+# compiled binary is -- so the first two bytes tell them apart, without
+# depending on the external `file` command (not guaranteed present on a
+# minimal image). Testing for the shebang rather than for ELF's magic
+# number keeps this working on macOS, where the same Go build is Mach-O
+# instead.
 EXISTING_WOR_BIN=""
 if [ -x "${INSTALL_DIR}/wor" ]; then
   EXISTING_WOR_BIN="${INSTALL_DIR}/wor"
@@ -243,10 +323,8 @@ elif command -v wor >/dev/null 2>&1; then
 fi
 
 IS_GO_BUILD=0
-if [ -n "$EXISTING_WOR_BIN" ]; then
-  case "$(head -c4 "$EXISTING_WOR_BIN" 2>/dev/null)" in
-    $'\x7fELF') IS_GO_BUILD=1 ;;
-  esac
+if [ -n "$EXISTING_WOR_BIN" ] && [ "$(head -c2 "$EXISTING_WOR_BIN" 2>/dev/null)" != "#!" ]; then
+  IS_GO_BUILD=1
 fi
 
 if [ -n "$OLD_CONFIG" ] || [ -n "$OLD_WORHOME" ]; then
@@ -523,13 +601,20 @@ install_rhel() {
   exit 1
 }
 
+# Empty on macOS, where there is no package phase (see the PLATFORM
+# block above), so this matches nothing and falls straight through to
+# installing the binary.
 case "$OS_FAMILY" in
   debian) install_debian ;;
   rhel) install_rhel ;;
 esac
 
-# ---- install the matching wor binary (distro-agnostic from here) -------
+# ---- install the matching wor binary (same on every platform) ---------
 
+# uname -m is read on the machine being installed to, so this is always
+# right and there is no flag to override it. A shell running under
+# Rosetta reports x86_64 and gets the amd64 build: it runs, just not
+# natively.
 detect_arch() {
   case "$(uname -m)" in
     x86_64|amd64) echo "amd64" ;;
@@ -542,10 +627,10 @@ if ! ARCH="$(detect_arch)"; then
   echo "ERROR: unsupported CPU architecture: $(uname -m)" >&2
   exit 1
 fi
-BIN_SRC="$SCRIPT_DIR/bin/wor-linux-${ARCH}"
+BIN_SRC="$SCRIPT_DIR/bin/wor-${PLATFORM}-${ARCH}"
 
 if [ ! -f "$BIN_SRC" ]; then
-  echo "ERROR: no matching binary for linux/${ARCH} at $BIN_SRC" >&2
+  echo "ERROR: no matching binary for ${PLATFORM}/${ARCH} at $BIN_SRC" >&2
   echo "Available binaries:" >&2
   ls -1 "$SCRIPT_DIR/bin" >&2 || true
   exit 1
@@ -568,9 +653,9 @@ fi
 # path.go). This installer runs as root, but the rc file that matters
 # belongs to $SUDO_USER -- the same operator-vs-root distinction the
 # old-install detection above already makes. Which rc file is decided
-# by that user's *login shell* (getent passwd field 7), not by distro:
-# this script only ever runs on Linux, where bash is the usual default
-# but zsh operators are common enough to matter.
+# by that user's *login shell*, not by distro or OS: bash is the usual
+# default on Linux and zsh on macOS, and either is common enough on the
+# other to be worth reading rather than assuming.
 #
 # The grep guard makes re-runs (release updates) idempotent: any
 # existing mention of `wor shell-init` -- whether added here or by the
@@ -579,7 +664,7 @@ SHELL_RC=""
 OPERATOR_SHELL=""
 SHELLINIT_ADDED=0
 if [ -n "$OPERATOR_HOME" ]; then
-  OPERATOR_SHELL="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f7 || true)"
+  OPERATOR_SHELL="$(operator_shell "$SUDO_USER" || true)"
   case "$OPERATOR_SHELL" in
     */zsh) SHELL_RC="$OPERATOR_HOME/.zshrc" ;;
     *)     SHELL_RC="$OPERATOR_HOME/.bashrc" ;;
@@ -655,5 +740,5 @@ if [ "$SHELLINIT_ADDED" -eq 1 ]; then
   echo "  0. source $SHELL_RC   # or open a new terminal, to enable \"wor goto\" now"
 fi
 echo "  1. wor version   # confirm the binary installed correctly"
-echo "  2. wor doctor    # confirm every runtime above was detected correctly"
+echo "  2. wor doctor    # confirm every runtime it needs was detected correctly"
 echo "  3. wor setup     # configure WOR_HOME, host provider, SSL, etc."

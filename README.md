@@ -102,13 +102,24 @@ cd wor-host
 sudo ./install.sh
 ```
 
-`install.sh` auto-detects the distro (Debian/Ubuntu only for now),
+`install.sh` detects the OS and the CPU architecture itself -- there is
+no flag for either, because one archive ships every target and a
+hand-picked mismatch only surfaces later as an `Exec format error`.
+
+On Linux it also auto-detects the distro (Debian/Ubuntu only for now),
 reports which runtime packages are already installed, asks before
-installing only the missing ones (it never upgrades or removes
-anything already present), copies the matching `bin/wor-linux-<arch>`
-into `/usr/local/bin`, and offers to enable the `wor goto` shell
-integration in your rc file. Afterwards, as the non-root operator
-user, run in order: `wor version` → `wor doctor` → `wor setup`.
+installing only the missing ones (it never upgrades or removes anything
+already present), and copies the matching `bin/wor-linux-<arch>` into
+`/usr/local/bin`.
+
+On macOS it installs `bin/wor-macos-<arch>` and nothing else: a Mac is
+where you run the wor CLI, not a host wor deploys to, so there are no
+runtimes for it to install and `--host-provider`/`--with-*`/`--skip-ssl`
+do not apply.
+
+Either way it offers to enable the `wor goto` shell integration in your
+rc file. Afterwards, as the non-root operator user, run in order:
+`wor version` → `wor doctor` → `wor setup`.
 
 ## Commands
 
