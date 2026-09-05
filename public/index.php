@@ -267,6 +267,15 @@ $latestVersion = publishedReleaseTag() ?? 'unreleased';
                         <div class="col-md-6 col-lg-4">
                             <div class="card h-100 card-hover border-0 shadow-sm">
                                 <div class="card-body">
+                                    <div class="feature-icon mb-3"><i class="bi bi-sliders"></i></div>
+                                    <h5 class="card-title">Per-service configuration</h5>
+                                    <p class="card-text text-body-secondary">Each service carries its own <code>.wor/</code> folder: web-server snippets included into its vhost, and — for php — its own <code>php.ini</code> and php-fpm pool tuning, validated and applied without touching the settings of every other site on the machine.</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6 col-lg-4">
+                            <div class="card h-100 card-hover border-0 shadow-sm">
+                                <div class="card-body">
                                     <div class="feature-icon mb-3"><i class="bi bi-globe2"></i></div>
                                     <h5 class="card-title">Host management</h5>
                                     <p class="card-text text-body-secondary">Generates and enables Nginx and Apache vhosts, tests configuration before reload, and can manage your local hosts file for development domains.</p>
@@ -306,6 +315,15 @@ $latestVersion = publishedReleaseTag() ?? 'unreleased';
                                     <div class="feature-icon mb-3"><i class="bi bi-heart-pulse"></i></div>
                                     <h5 class="card-title">Health &amp; diagnostics</h5>
                                     <p class="card-text text-body-secondary"><code>wor health</code> sweeps the whole fleet, <code>wor diagnose</code> does read-only root-cause analysis on a broken service, and <code>wor doctor</code> checks the machine itself.</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6 col-lg-4">
+                            <div class="card h-100 card-hover border-0 shadow-sm">
+                                <div class="card-body">
+                                    <div class="feature-icon mb-3"><i class="bi bi-arrow-up-circle"></i></div>
+                                    <h5 class="card-title">Upgrades itself</h5>
+                                    <p class="card-text text-body-secondary"><code>wor upgrade</code> compares the binary you are running against the release the download site publishes, shows you both, and installs the newer one once you confirm — no package repository to add, no install steps to remember.</p>
                                 </div>
                             </div>
                         </div>
@@ -549,6 +567,7 @@ Suggested fix (run yourself -- wor diagnose never changes anything)
                 <span class="text-body-secondary small">
                     <a href="/download/" class="link-secondary me-3">Downloads</a>
                     <a href="/docs/" class="link-secondary me-3">Docs</a>
+                    <a href="/release-notes/" class="link-secondary me-3">Release notes</a>
                     <a href="/code-signing/" class="link-secondary me-3">Code signing policy</a>
                     <a href="https://paypal.me/TeamWorapong" target="_blank" rel="noopener" class="link-secondary"><i class="bi bi-heart-fill me-1"></i>Donate</a>
                 </span>

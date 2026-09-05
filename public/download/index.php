@@ -138,6 +138,7 @@ $latestTag = array_key_first($versions);
 
         <h1 class="fw-bold mb-1"><i class="bi bi-box-seam me-2 text-gradient"></i>Downloads</h1>
         <p class="text-body-secondary mb-3">All release archives contain the same layout — the folder inside is always <code>wor-host/</code>. Run <code>sudo ./install.sh</code> after extracting.</p>
+        <p class="mb-3"><a href="/release-notes/"><i class="bi bi-megaphone me-1"></i>What changed in this release</a></p>
 
         <div class="d-flex flex-wrap gap-2 mb-4">
           <a href="https://github.com/team-worapong/wor" target="_blank" rel="noopener" class="text-decoration-none">
@@ -261,6 +262,7 @@ $latestTag = array_key_first($versions);
     <span class="text-body-secondary small">
       <a href="/" class="link-secondary me-3">Home</a>
       <a href="/docs/" class="link-secondary me-3">Docs</a>
+      <a href="/release-notes/" class="link-secondary me-3">Release notes</a>
       <a href="/code-signing/" class="link-secondary me-3">Code signing policy</a>
       <a href="https://paypal.me/TeamWorapong" target="_blank" rel="noopener" class="link-secondary"><i class="bi bi-heart-fill me-1"></i>Donate</a>
     </span>
