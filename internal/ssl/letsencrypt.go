@@ -20,20 +20,31 @@ func letsEncryptRenewalConf(host string) string {
 // authenticator, writing challenges into webroot and registering
 // renewHook so every later renewal refreshes wor's own copy.
 //
-// The hook is registered with --renew-hook, not --deploy-hook. The two
-// store the same renew_hook line in the renewal config; --deploy-hook
-// additionally runs it once, right now, as part of this issuance. That
-// extra run is both redundant and self-defeating here: redundant
-// because the caller copies the fresh certificate itself on the very
-// next line, and self-defeating because the hook is `wor ssl sync`,
-// which is a second wor process asking for the $WOR_HOME lock the wor
-// process that started certbot is still holding (see internal/worlock).
-// It cannot get it, so certbot reports "Hook 'deploy-hook' reported
-// error code 1" on every single issuance -- a failure that looks
-// alarming, is printed at the exact moment an operator is watching, and
-// means nothing. With --renew-hook the hook is stored and fires only
-// where it is actually needed: an unattended renewal, where no other
-// wor process is running and the lock is free.
+// The hook is registered with --renew-hook, not --deploy-hook. Both
+// store the same renew_hook line in the renewal config, and --renew-hook
+// is the flag that says what wor means: run this when the certificate
+// is renewed.
+//
+// It does NOT stop certbot running the hook as part of this issuance,
+// which is what an earlier version of this comment claimed. Observed on
+// a first issuance of a brand-new lineage: certbot logs the value back
+// as deploy_hook ("set by user"), then "Running deploy-hook command",
+// between creating live/<host> and reporting success. Whatever the
+// documented split between the two flags, the certbot in use here runs
+// a renew hook on first issuance too.
+//
+// That matters because the hook is `wor ssl sync`, a second wor process
+// asking for the $WOR_HOME lock that the wor process which started
+// certbot is still holding (see internal/worlock). It cannot get it, so
+// certbot reports "Hook 'deploy-hook' reported error code 1" on an
+// issuance that in fact succeeded -- alarming, printed at the exact
+// moment an operator is watching, and meaningless, because the caller
+// copies the fresh certificate itself on the very next line.
+//
+// Since the collision cannot be avoided by choosing a flag, it is
+// handled where it happens instead: the registered hook carries
+// --skip-if-busy, which makes a busy lock a successful no-op with an
+// explanation rather than a failed hook. See cliapp.skipsWhenLockBusy.
 //
 // It used to use certbot's --nginx/--apache plugins. Those work by
 // editing the vhost, which wor regenerates from templates on every

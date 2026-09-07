@@ -109,6 +109,13 @@ func (a *App) Run(args []string) int {
 	if commandNeedsLock(cmd, rest) {
 		lock, err := worlock.Acquire(a.Cfg.WorHome)
 		if err != nil {
+			// One invocation treats a held lock as "nothing to do"
+			// rather than as a failure: the renewal hook wor registers
+			// with certbot. See skipsWhenLockBusy.
+			if errors.Is(err, worlock.ErrLockHeld) && skipsWhenLockBusy(cmd, rest) {
+				a.reportLockBusySkip(positionalArg(rest[1:]))
+				return 0
+			}
 			fmt.Fprintf(a.Err, "ERROR: %s\n", err)
 			// Only a genuinely held lock means "wait and retry". Saying
 			// that for every failure sent an operator hunting for a
@@ -269,6 +276,68 @@ func commandNeedsLock(cmd string, rest []string) bool {
 		}
 	}
 	return true
+}
+
+// skipsWhenLockBusy reports whether a lock held by another wor process
+// should end this command quietly and successfully, instead of as the
+// error every other command reports.
+//
+// Exactly one invocation qualifies: `wor ssl sync <host> --skip-if-busy`,
+// which is the form the certbot renewal hook is registered in (see
+// renewHookCommand). The hook is a second wor process, and certbot runs
+// it at the end of an issuance the *first* wor process is still driving
+// -- so it asks for a lock that cannot possibly be free, fails, and
+// certbot reports "Hook 'deploy-hook' reported error code 1" on a run
+// that actually succeeded.
+//
+// Registering the hook with --renew-hook rather than --deploy-hook was
+// meant to prevent that, on the understanding that certbot stores a
+// renew hook without running it at first issuance. It does run it: its
+// debug log shows the value arriving as deploy_hook and "Running
+// deploy-hook command" while the lineage directories are being created
+// for the very first time. So the collision cannot be avoided by
+// choosing a flag, and the assumption that it could is now corrected in
+// internal/ssl/letsencrypt.go and DESIGN.md section 21.
+//
+// What can be avoided is calling it a failure. Whenever another wor
+// process holds the lock during a sync, that process is the one that
+// just obtained the certificate, and it copies the certificate itself
+// one step later -- so there is genuinely nothing left for the hook to
+// do. The flag states that rather than letting wor guess: only the hook
+// wor writes carries it, so a sync an operator types by hand still
+// fails loudly, which is right, because for them a busy lock really is
+// something to wait out.
+//
+// Deliberately not done: recording the skip in sync.json. Writing state
+// under WOR_HOME is exactly what the lock protects, so a command that
+// could not take the lock must not write one. reportLockBusySkip's
+// output is the trace instead -- certbot captures hook output into
+// /var/log/letsencrypt/letsencrypt.log -- and the expiry warning in
+// `wor health` stays the net under a renewal that really was missed.
+func skipsWhenLockBusy(cmd string, rest []string) bool {
+	if cmd != "ssl" || len(rest) < 2 || rest[0] != "sync" {
+		return false
+	}
+	return parseFlags(rest[1:]).Has("skip-if-busy")
+}
+
+// reportLockBusySkip explains a skipped sync and what to do about it.
+//
+// Saying only "skipped" would trade one puzzling message for another.
+// The two situations this lands in look identical from inside the hook
+// and are not remotely the same afterwards -- one leaves nothing
+// undone, the other leaves wor serving an older certificate than
+// certbot has -- and whoever reads this, possibly months later in a log
+// file, cannot be assumed to know how wor's lock works. So both cases
+// are named, and the command that settles which one it was comes with
+// the command that repairs it.
+func (a *App) reportLockBusySkip(host string) {
+	a.info("ssl sync %s: skipped -- another wor command is holding the lock on %s.", host, a.Cfg.WorHome)
+	a.info("From `wor ssl issue` or `wor create` this is expected and nothing is missing:")
+	a.info("that command copies the new certificate itself as soon as certbot returns.")
+	a.info("From an unattended renewal it is not: wor's copy is then older than certbot's.")
+	a.info("Check which it was:  wor ssl status %s", host)
+	a.info("Refresh wor's copy:  wor ssl sync %s", host)
 }
 
 // requiresInitializedWorkspace decides whether cmd needs a fully set up

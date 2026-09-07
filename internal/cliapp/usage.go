@@ -111,12 +111,17 @@ Usage:
   wor ssl redirect <host> on|off
       (turns the HTTP -> HTTPS redirect on or off for a host that
       already has a certificate, without reissuing it)
-  wor ssl sync <host>
+  wor ssl sync <host> [--skip-if-busy]
       (refreshes wor's own copy of the certificate from certbot's store
-      and reloads. Registered automatically as certbot's deploy hook, so
+      and reloads. Registered automatically as certbot's renewal hook, so
       renewals pick themselves up; run it by hand to migrate a host
       issued before wor kept its own copy, or to repair a copy that has
-      drifted.)
+      drifted. --skip-if-busy exits successfully, with an explanation,
+      when another wor command holds the workspace lock -- it is there
+      for the registered hook, which certbot also fires during an
+      issuance wor is still in the middle of. Typing it by hand is
+      pointless: without the flag a busy lock is reported as the error
+      it is for you.)
   wor ssl renew <host>
   wor ssl status <host>
   wor ssl remove <host> [--yes]

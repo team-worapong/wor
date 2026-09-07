@@ -122,10 +122,11 @@ func TestRenewHookCarriesWorHomeAndAnAbsoluteBinary(t *testing.T) {
 	if !strings.Contains(hook, "WOR_HOME='/Users/someone/wor'") {
 		t.Errorf("hook must carry WOR_HOME: %s", hook)
 	}
-	if !strings.HasSuffix(hook, " ssl sync app.example.com") {
+	const tail = " ssl sync app.example.com --skip-if-busy"
+	if !strings.HasSuffix(hook, tail) {
 		t.Errorf("hook must end with the sync subcommand: %s", hook)
 	}
-	binary := strings.TrimSuffix(strings.SplitN(hook, " ", 3)[2], " ssl sync app.example.com")
+	binary := strings.TrimSuffix(strings.SplitN(hook, " ", 3)[2], tail)
 	if !strings.HasPrefix(binary, "'/") {
 		t.Errorf("the binary path must be absolute and quoted: %s", hook)
 	}
@@ -161,5 +162,20 @@ func TestRenewHookStartsWithACommandNameCertbotCanFind(t *testing.T) {
 func TestShellQuoteEscapesQuotes(t *testing.T) {
 	if got := shellQuote("/tmp/it's here"); got != `'/tmp/it'\''s here'` {
 		t.Errorf("shellQuote = %s", got)
+	}
+}
+
+// certbot runs this hook at the end of the very issuance wor is driving
+// -- observed on a first issuance, despite the hook being registered
+// with --renew-hook -- so it asks for a lock the wor process that
+// started certbot is still holding. Without the flag that is reported
+// as "Hook 'deploy-hook' reported error code 1" on a run that
+// succeeded. Asserted separately from the string above so that dropping
+// the flag fails with the reason attached.
+func TestRenewHookSkipsItselfWhenWorIsAlreadyRunning(t *testing.T) {
+	app := &App{Cfg: &config.Config{WorHome: "/opt/wor"}, Err: io.Discard}
+	hook := app.renewHookCommand("app.example.com")
+	if !strings.Contains(hook, "--skip-if-busy") {
+		t.Errorf("the registered hook must carry --skip-if-busy: %s", hook)
 	}
 }

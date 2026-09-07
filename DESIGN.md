@@ -716,7 +716,7 @@ own, and the per-OS default WOR_HOME (`$HOME/wor` on macOS) resolves to
 root's home rather than the operator's, so the hook would sync into the
 wrong workspace.
 
-### The hook must never run while wor holds the lock
+### The hook runs while wor holds the lock, and has to survive it
 
 The hook is a second `wor` process, and it needs the `$WOR_HOME` lock
 (section on `internal/worlock`) for the state it writes. Whenever the
@@ -726,25 +726,48 @@ cannot get it -- non-blocking by design -- and fails. Certbot reports
 breaks, but the operator is shown a scary failure on a run that
 succeeded, and the sync the hook was supposed to do never happened.
 
-Rather than making the lock re-entrant across processes (a token in the
-lock file, or passing a marker through `sudo`'s stripped environment --
-both invisible machinery that fails in ways nobody would guess), the
-rule is simply that **wor never nests itself**:
+Making the lock re-entrant across processes was rejected: a token in the
+lock file, or a marker passed through `sudo`'s stripped environment, is
+invisible machinery that fails in ways nobody would guess. The rule is
+that **wor never nests itself** -- but one nesting cannot be designed
+away, so it is made harmless instead.
 
-- **Issuance** registers the hook with `--renew-hook`, not
-  `--deploy-hook`. Both store the same `renew_hook` line in the renewal
-  config; only `--deploy-hook` also runs it immediately. That immediate
-  run is redundant anyway -- `wor ssl issue` copies the fresh
-  certificate itself, in-process, one step later -- so dropping it costs
-  nothing and removes the collision entirely.
 - **`wor ssl renew`** does not take the lock at all. It writes nothing
   under WOR_HOME itself; it runs `certbot renew` and lets the hook do
   the writing, and the hook takes the lock in its own process. This is
   the one ssl action excluded; every other one writes state directly and
   keeps the lock.
+- **Issuance** registers the hook with `--renew-hook`, not
+  `--deploy-hook`. Both store the same `renew_hook` line; `--renew-hook`
+  is simply the flag that names what wor means.
 
-An unattended renewal -- the case the hook exists for -- is unaffected:
-no other wor process is running, so the lock is free.
+  This was first written down as the fix for the collision, on the
+  understanding that certbot stores a renew hook without running it at
+  first issuance. **That is not what certbot does.** On 2026-09-07, a
+  first issuance for a brand-new lineage logged the value back as
+  `deploy_hook` ("set by user") and then `Running deploy-hook command`,
+  between creating `live/<host>` and reporting success -- and the hook
+  failed on the lock exactly as before. The flag choice does not prevent
+  the collision.
+- **The registered hook therefore carries `--skip-if-busy`**. With it,
+  `wor ssl sync` treats a lock held by another wor process as *nothing
+  to do* and exits 0 with an explanation, rather than as an error. This
+  is true rather than a papering-over: the process holding the lock is
+  the one that just obtained the certificate, and it copies the
+  certificate itself one step later.
+
+  The flag is explicit, and only the hook wor writes carries it. A sync
+  an operator types by hand still fails loudly on a busy lock, because
+  for them the lock really is something to wait out. The skip is *not*
+  recorded in `sync.json`: writing state under WOR_HOME is precisely
+  what the lock protects, so a command that could not take the lock must
+  not write one. The message is the trace (certbot captures hook output
+  into `/var/log/letsencrypt/letsencrypt.log`), and `wor health`'s
+  expiry warning remains the net under a renewal genuinely missed.
+
+An unattended renewal -- the case the hook exists for -- is unaffected
+either way: no other wor process is running, so the lock is free and the
+hook does its full job.
 
 ### Issuance moved to `--webroot`
 

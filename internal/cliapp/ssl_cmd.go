@@ -386,13 +386,17 @@ func (a *App) certificateOwner() (uid, gid int, err error) {
 		a.Cfg.WorHome, a.Cfg.WorHome)
 }
 
-// renewHookCommand is the command certbot runs after each renewal. It
-// is registered with --renew-hook, so certbot stores it but does not
-// run it during the issuance wor itself drives -- see
-// ssl.IssueLetsEncrypt for why running it there deadlocks wor against
-// its own $WOR_HOME lock.
+// renewHookCommand is the command certbot runs after each renewal.
 //
-// Two things in it are easy to get wrong and both fail silently months
+// It carries --skip-if-busy because certbot also runs it at the end of
+// the issuance wor itself drives, while that wor process still holds
+// the $WOR_HOME lock this one would need. The flag turns that
+// unavoidable collision into a successful no-op with an explanation
+// instead of a failed hook -- see cliapp.skipsWhenLockBusy for the full
+// reasoning, and ssl.IssueLetsEncrypt for why choosing --renew-hook
+// over --deploy-hook does not prevent the collision on its own.
+//
+// Three things in it are easy to get wrong and all fail silently months
 // later, which is why they are spelled out rather than left to the
 // environment:
 //
@@ -415,8 +419,8 @@ func (a *App) certificateOwner() (uid, gid int, err error) {
 // token "WOR_HOME=/opt/wor", so certbot aborts the entire issuance with
 // "Unable to find renew-hook command WOR_HOME=... in the PATH" before
 // it ever contacts the ACME server. (That validation happens when the
-// flag is parsed, so it still applies even though the hook itself no
-// longer runs at issuance time.) Running the hook through a shell --
+// flag is parsed, so it applies to --renew-hook exactly as it did to
+// --deploy-hook.) Running the hook through a shell --
 // which certbot does -- would have handled the prefix fine; the check
 // that rejects it happens earlier, and does not. env(1) is POSIX, is on
 // PATH everywhere wor supports, and sets the variable for exactly one
@@ -436,7 +440,7 @@ func (a *App) renewHookCommand(host string) string {
 	if resolved, err := filepath.EvalSymlinks(self); err == nil {
 		self = resolved
 	}
-	return fmt.Sprintf("env WOR_HOME=%s %s ssl sync %s", shellQuote(a.Cfg.WorHome), shellQuote(self), host)
+	return fmt.Sprintf("env WOR_HOME=%s %s ssl sync %s --skip-if-busy", shellQuote(a.Cfg.WorHome), shellQuote(self), host)
 }
 
 // shellQuote wraps s in single quotes so a path with spaces survives
