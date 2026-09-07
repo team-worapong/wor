@@ -6,14 +6,14 @@ func (a *App) usage() {
 	fmt.Fprintf(a.Err, `%s (Go) v%s
 
 Usage:
-  wor version
+  wor version [--json]
   wor upgrade [--yes]
       (compares this binary against the release the download site
       publishes, shows both, and installs the newer one once you
       confirm. --yes skips the confirmation.)
   wor --version
   wor setup
-  wor doctor
+  wor doctor [--json]
   wor env
   wor clean
   wor reset
@@ -123,11 +123,11 @@ Usage:
       pointless: without the flag a busy lock is reported as the error
       it is for you.)
   wor ssl renew <host>
-  wor ssl status <host>
+  wor ssl status <host> [--json]
   wor ssl remove <host> [--yes]
   wor ssl install <host> --cert=/path/fullchain.pem --key=/path/privkey.pem
   wor info <host|domain/service>
-  wor health
+  wor health [--json]
       (fleet-wide health sweep: for every enabled service, checks its
       process/pool, port, and one real HTTP request through the web
       server, then flags the broken ones with a pointer to
@@ -135,6 +135,14 @@ Usage:
       unlike "wor doctor", which answers "is this machine set up
       right?". Read-only; exit code 1 when a problem is found, so it
       can drive cron/monitoring.)
+  --json
+      (accepted by the four read-only reports above -- version, doctor,
+      health, ssl status -- and by nothing else. Prints one JSON
+      document on stdout instead of the text, carrying "schema": 1 for
+      the reader to check; the exit code is unchanged, and the human
+      ERROR line still goes to stderr. A run that fails prints
+      {"schema":1,"error":"..."} instead of its report, so stdout always
+      holds exactly one document. See docs/commands.md.)
   wor diagnose <host|domain/service>
       (read-only root-cause analysis for ONE down/misbehaving service:
       checks config, dns, web server, ssl expiry, process state, port,

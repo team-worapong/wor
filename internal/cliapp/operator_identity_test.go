@@ -36,7 +36,7 @@ func newDoctorIdentityTestApp(t *testing.T) *App {
 func TestCheckOperatorIdentitySilentWithNoDomains(t *testing.T) {
 	app := newDoctorIdentityTestApp(t)
 
-	app.checkOperatorIdentity()
+	app.checkOperatorIdentity(app.newReporter(false))
 
 	if out := app.Out.(*bytes.Buffer).String(); out != "" {
 		t.Errorf("expected no output for an empty domains dir, got %q", out)
@@ -59,7 +59,7 @@ func TestCheckOperatorIdentityReportsASingleOwner(t *testing.T) {
 		t.Fatalf("MkdirAll service dir: %v", err)
 	}
 
-	app.checkOperatorIdentity()
+	app.checkOperatorIdentity(app.newReporter(false))
 
 	out := app.Out.(*bytes.Buffer).String()
 	if !strings.Contains(out, "single account") {

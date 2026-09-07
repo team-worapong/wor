@@ -24,27 +24,77 @@ import (
 // confirms the binary, `wor doctor` confirms every runtime and the
 // environment it's running in. Duplicating that here too just means
 // more places that can disagree or drift out of sync.
-func (a *App) cmdVersion() {
-	exe, _ := os.Executable()
-	fmt.Fprintln(a.Out, ProductName)
-	fmt.Fprintln(a.Out, strings.Repeat("-", len(ProductName)))
-	fmt.Fprintf(a.Out, "Version  : %s\n", Version)
-	fmt.Fprintf(a.Out, "Release  : %s\n", releaseTag())
-	fmt.Fprintf(a.Out, "Commit   : %s\n", formatCommit())
-	fmt.Fprintf(a.Out, "OS       : %s\n", osutil.OSName())
-	if distro, ok := osutil.LinuxDistro(); ok {
-		fmt.Fprintf(a.Out, "Distro   : %s\n", distro)
+func (a *App) cmdVersion(jsonMode bool) error {
+	rep := a.buildVersionReport()
+	if jsonMode {
+		return a.writeJSON(rep)
 	}
+	a.printVersionReport(rep)
+	return nil
+}
+
+// versionReport is what `wor version` found, separated from how it is
+// shown so the same run can be printed or marshalled. Field names here
+// are the published --json contract (see SchemaVersion).
+type versionReport struct {
+	Schema  int    `json:"schema"`
+	Product string `json:"product"`
+	Version string `json:"version"`
+	Release string `json:"release"`
+	Commit  string `json:"commit"`
+	OS      string `json:"os"`
+	Distro  string `json:"distro,omitempty"`
 	// Build is the GOOS/GOARCH this binary was actually compiled for
 	// (e.g. "linux/amd64") -- useful for confirming the right one of
 	// scripts/build.sh --release's 5 cross-compiled targets got
 	// installed, distinct from OS (the host's own OS/family label).
-	fmt.Fprintf(a.Out, "Build    : %s/%s\n", runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintf(a.Out, "Bin      : %s\n", exe)
-	if a.workspaceInitialized() {
-		a.docOK("Workspace initialized")
+	Build                string `json:"build"`
+	Bin                  string `json:"bin"`
+	WorkspaceInitialized bool   `json:"workspace_initialized"`
+
+	// distroKnown carries LinuxDistro's own ok separately, so the text
+	// renderer prints the Distro line exactly when this command always
+	// has -- including for an /etc/os-release whose PRETTY_NAME is set
+	// but empty. Unexported, so it is not part of the JSON contract:
+	// there, an unknown distro is simply an absent field.
+	distroKnown bool
+}
+
+func (a *App) buildVersionReport() versionReport {
+	exe, _ := os.Executable()
+	distro, distroKnown := osutil.LinuxDistro()
+	return versionReport{
+		Schema:               SchemaVersion,
+		Product:              ProductName,
+		Version:              Version,
+		Release:              releaseTag(),
+		Commit:               formatCommit(),
+		OS:                   osutil.OSName(),
+		Distro:               distro,
+		Build:                runtime.GOOS + "/" + runtime.GOARCH,
+		Bin:                  exe,
+		WorkspaceInitialized: a.workspaceInitialized(),
+		distroKnown:          distroKnown,
+	}
+}
+
+func (a *App) printVersionReport(rep versionReport) {
+	r := a.newReporter(false)
+	r.Line("%s", rep.Product)
+	r.Line("%s", strings.Repeat("-", len(rep.Product)))
+	r.Line("Version  : %s", rep.Version)
+	r.Line("Release  : %s", rep.Release)
+	r.Line("Commit   : %s", rep.Commit)
+	r.Line("OS       : %s", rep.OS)
+	if rep.distroKnown {
+		r.Line("Distro   : %s", rep.Distro)
+	}
+	r.Line("Build    : %s", rep.Build)
+	r.Line("Bin      : %s", rep.Bin)
+	if rep.WorkspaceInitialized {
+		r.OK("Workspace initialized")
 	} else {
-		a.docFail("Workspace not initialized (run: wor setup)")
+		r.Fail("Workspace not initialized (run: wor setup)")
 	}
 }
 

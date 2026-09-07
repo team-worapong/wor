@@ -1777,7 +1777,7 @@ func (d *diagnosis) printNotes() {
 // up right (runtimes installed, workspace initialized); health checks
 // whether the SERVICES are actually serving. Same non-interactive/
 // read-only/exit-code contract as diagnose, so it can drive cron.
-func (a *App) cmdHealth(args []string) (bool, error) {
+func (a *App) cmdHealth(args []string, jsonMode bool) (bool, error) {
 	refs, err := a.Store.ListAllServices()
 	if err != nil {
 		return false, err
@@ -1793,8 +1793,27 @@ func (a *App) cmdHealth(args []string) (bool, error) {
 			needPM2 = true
 		}
 	}
+
+	// Under --json this command prints nothing as it goes: the report
+	// built alongside is the output, and a single stray line on stdout
+	// would corrupt the one JSON document it is supposed to carry. One
+	// writer decided here, rather than an "if jsonMode" at each of the
+	// twenty-odd print sites below, is what makes that hard to get
+	// wrong -- and colors are off with it, since nothing is going to a
+	// terminal.
+	out := a.Out
+	useColor := a.colorEnabled()
+	if jsonMode {
+		out = io.Discard
+		useColor = false
+	}
+	rep := healthReport{Schema: SchemaVersion, Services: []healthService{}}
+
 	if len(enabled) == 0 {
-		fmt.Fprintln(a.Out, "No enabled services found.")
+		fmt.Fprintln(out, "No enabled services found.")
+		if jsonMode {
+			return false, a.writeJSON(rep)
+		}
 		return false, nil
 	}
 
@@ -1813,24 +1832,34 @@ func (a *App) cmdHealth(args []string) (bool, error) {
 	host, usage := a.collectResources(enabled, pm2Procs)
 
 	const rule = "--------------------------------------------"
-	fmt.Fprintf(a.Out, "WOR Health (%d enabled services)\n", len(enabled))
-	fmt.Fprintln(a.Out, rule)
+	fmt.Fprintf(out, "WOR Health (%d enabled services)\n", len(enabled))
+	fmt.Fprintln(out, rule)
 	if host.cpuKnown {
-		fmt.Fprintf(a.Out, "Host CPU    : %.0f%% (%d cores)\n", host.cpuPct, host.cores)
+		fmt.Fprintf(out, "Host CPU    : %.0f%% (%d cores)\n", host.cpuPct, host.cores)
+		rep.Host.CPU = &healthCPU{Percent: host.cpuPct, Cores: host.cores}
 	}
 	if host.memKnown {
-		fmt.Fprintf(a.Out, "Host Memory : %s / %s (%.0f%%)\n",
+		fmt.Fprintf(out, "Host Memory : %s / %s (%.0f%%)\n",
 			formatMemBytes(host.memUsed), formatMemBytes(host.memTotal),
 			float64(host.memUsed)/float64(host.memTotal)*100)
+		rep.Host.Memory = &healthUsage{
+			UsedBytes:  host.memUsed,
+			TotalBytes: host.memTotal,
+			Percent:    float64(host.memUsed) / float64(host.memTotal) * 100,
+		}
 	}
 	if diskUsed, diskTotal, ok := diskUsageBytes(a.Cfg.WorHome); ok {
-		fmt.Fprintf(a.Out, "Disk Usage  : %s / %s (%.0f%%)\n",
+		fmt.Fprintf(out, "Disk Usage  : %s / %s (%.0f%%)\n",
 			formatMemBytes(diskUsed), formatMemBytes(diskTotal),
 			float64(diskUsed)/float64(diskTotal)*100)
+		rep.Host.Disk = &healthUsage{
+			UsedBytes:  diskUsed,
+			TotalBytes: diskTotal,
+			Percent:    float64(diskUsed) / float64(diskTotal) * 100,
+		}
 	}
-	fmt.Fprintln(a.Out, rule)
+	fmt.Fprintln(out, rule)
 
-	useColor := a.colorEnabled()
 	healthy, warned := 0, 0
 	var failedTargets []string
 	for _, ref := range enabled {
@@ -1872,8 +1901,8 @@ func (a *App) cmdHealth(args []string) (bool, error) {
 			dot = tag(useColor, ansiRed, "●", "[FAIL]")
 		}
 
-		fmt.Fprintln(a.Out)
-		fmt.Fprintf(a.Out, "%s %s\n", dot, target)
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%s %s\n", dot, target)
 
 		// Status: the process layer's verdict. A service that failed
 		// only at the HTTP layer still shows Online here -- its ✗ http
@@ -1885,50 +1914,71 @@ func (a *App) cmdHealth(args []string) (bool, error) {
 		if !svcOK && !probeRan {
 			status = "FAILED -- " + proc
 		}
-		fmt.Fprintf(a.Out, "    Status : %s\n", status)
-		fmt.Fprintf(a.Out, "    Runtime: %s\n", a.healthRuntimeLabel(ref))
+		svcRep := healthService{
+			Target:  target,
+			Domain:  ref.Domain,
+			Service: ref.Service.Name,
+			Level:   healthLevelName(level),
+			Status:  status,
+			Runtime: a.healthRuntimeLabel(ref),
+		}
+		fmt.Fprintf(out, "    Status : %s\n", status)
+		fmt.Fprintf(out, "    Runtime: %s\n", svcRep.Runtime)
 		// CPU/Memory/Uptime lines are simply absent when unknown
 		// (static services, or platforms without the reader) -- owner
-		// chose hidden lines over "-" placeholders.
+		// chose hidden lines over "-" placeholders. The JSON follows
+		// the same rule: an absent field, never a zero standing in for
+		// "not measured".
 		if u, ok := usage[target]; ok {
 			if u.cpuKnown {
-				fmt.Fprintf(a.Out, "    CPU    : %.1f%%\n", u.cpuPct)
+				cpu := u.cpuPct
+				svcRep.CPUPercent = &cpu
+				fmt.Fprintf(out, "    CPU    : %.1f%%\n", u.cpuPct)
 			}
 			if u.memKnown {
+				memBytes := u.memBytes
+				svcRep.MemoryBytes = &memBytes
 				memLine := formatMemBytes(u.memBytes)
 				if host.memKnown {
-					memLine += fmt.Sprintf(" (%.1f%%)", float64(u.memBytes)/float64(host.memTotal)*100)
+					memPct := float64(u.memBytes) / float64(host.memTotal) * 100
+					svcRep.MemoryPercent = &memPct
+					memLine += fmt.Sprintf(" (%.1f%%)", memPct)
 				}
-				fmt.Fprintf(a.Out, "    Memory : %s\n", memLine)
+				fmt.Fprintf(out, "    Memory : %s\n", memLine)
 			}
 		}
 		if info, ok := pm2Procs[pm2.Name(ref.Domain, ref.Service.Name)]; ok && info.Status == "online" {
 			if up := formatUptime(info.Uptime); up != "" {
-				fmt.Fprintf(a.Out, "    Uptime : %s\n", up)
+				svcRep.Uptime = up
+				fmt.Fprintf(out, "    Uptime : %s\n", up)
 			}
 		}
 
 		if certLine != "" {
+			svcRep.Certificate = &healthMark{OK: !certProblem, Message: certLine}
 			mark := tag(useColor, ansiGreen, "✓", "[ok]")
 			if certProblem {
 				mark = tag(useColor, ansiYellow, "⚠", "[warn]")
 			}
-			fmt.Fprintf(a.Out, "    %s %s\n", mark, certLine)
+			fmt.Fprintf(out, "    %s %s\n", mark, certLine)
 		}
 		if phpSettingsLine != "" {
+			svcRep.PHPSettings = &healthMark{OK: !phpSettingsProblem, Message: phpSettingsLine}
 			mark := tag(useColor, ansiGreen, "✓", "[ok]")
 			if phpSettingsProblem {
 				mark = tag(useColor, ansiYellow, "⚠", "[warn]")
 			}
-			fmt.Fprintf(a.Out, "    %s %s\n", mark, phpSettingsLine)
+			fmt.Fprintf(out, "    %s %s\n", mark, phpSettingsLine)
 		}
 
 		switch {
 		case !probeRan:
 			// process layer failed; there is no http verdict to show
 		case httpURL == "":
-			fmt.Fprintf(a.Out, "    %s %s\n", tag(useColor, ansiDim, "ℹ", "[i]"), httpNote)
+			svcRep.HTTP = &healthHTTP{Note: httpNote}
+			fmt.Fprintf(out, "    %s %s\n", tag(useColor, ansiDim, "ℹ", "[i]"), httpNote)
 		default:
+			svcRep.HTTP = &healthHTTP{URL: httpURL, Code: httpCode, Note: httpNote, OK: httpOK}
 			mark := tag(useColor, ansiGreen, "✓", "[ok]")
 			switch {
 			case level == 1:
@@ -1943,23 +1993,128 @@ func (a *App) cmdHealth(args []string) (bool, error) {
 			case httpNote != "":
 				verdict = httpCode + " (" + httpNote + ")"
 			}
-			fmt.Fprintf(a.Out, "    %s %s -> %s\n", mark, httpURL, verdict)
+			fmt.Fprintf(out, "    %s %s -> %s\n", mark, httpURL, verdict)
 		}
+
+		rep.Services = append(rep.Services, svcRep)
 	}
 
-	fmt.Fprintln(a.Out)
-	fmt.Fprintln(a.Out, rule)
-	fmt.Fprintf(a.Out, "Healthy : %d\n", healthy)
-	fmt.Fprintf(a.Out, "Warning : %d\n", warned)
-	fmt.Fprintf(a.Out, "Failed  : %d\n", len(failedTargets))
+	rep.Summary = healthSummary{
+		Enabled:       len(enabled),
+		Healthy:       healthy,
+		Warning:       warned,
+		Failed:        len(failedTargets),
+		FailedTargets: failedTargets,
+	}
+	rep.Failed = len(failedTargets) > 0
+
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, rule)
+	fmt.Fprintf(out, "Healthy : %d\n", healthy)
+	fmt.Fprintf(out, "Warning : %d\n", warned)
+	fmt.Fprintf(out, "Failed  : %d\n", len(failedTargets))
 	for _, t := range failedTargets {
-		fmt.Fprintf(a.Out, "    wor diagnose %s   # root cause + fix\n", t)
+		fmt.Fprintf(out, "    wor diagnose %s   # root cause + fix\n", t)
 	}
 	if len(failedTargets) > 0 {
-		fmt.Fprintln(a.Out, "To bring everything enabled back up: wor run")
-		return true, nil
+		fmt.Fprintln(out, "To bring everything enabled back up: wor run")
 	}
-	return false, nil
+
+	if jsonMode {
+		return rep.Failed, a.writeJSON(rep)
+	}
+	return rep.Failed, nil
+}
+
+// healthReport is the machine-readable form of `wor health`. Field
+// names here are the published --json contract (see SchemaVersion).
+//
+// Failed restates the verdict the exit code carries, so a reader that
+// captured stdout does not also need the process status to know whether
+// anything is down.
+type healthReport struct {
+	Schema   int             `json:"schema"`
+	Host     healthHost      `json:"host"`
+	Services []healthService `json:"services"`
+	Summary  healthSummary   `json:"summary"`
+	Failed   bool            `json:"failed"`
+}
+
+// healthHost carries the three host-wide figures. Each is a pointer so
+// that "not measured on this platform" is an absent field rather than a
+// zero -- the same choice the text output makes by hiding the line.
+type healthHost struct {
+	CPU    *healthCPU   `json:"cpu,omitempty"`
+	Memory *healthUsage `json:"memory,omitempty"`
+	Disk   *healthUsage `json:"disk,omitempty"`
+}
+
+type healthCPU struct {
+	Percent float64 `json:"percent"`
+	Cores   int     `json:"cores"`
+}
+
+type healthUsage struct {
+	UsedBytes  int64   `json:"used_bytes"`
+	TotalBytes int64   `json:"total_bytes"`
+	Percent    float64 `json:"percent"`
+}
+
+// healthService is one card of the report.
+type healthService struct {
+	Target  string `json:"target"`
+	Domain  string `json:"domain"`
+	Service string `json:"service"`
+	// Level is "ok", "warn" or "fail" -- the same vocabulary
+	// reportCheck uses, so a reader treats severity the same way across
+	// every wor report.
+	Level         string      `json:"level"`
+	Status        string      `json:"status"`
+	Runtime       string      `json:"runtime"`
+	CPUPercent    *float64    `json:"cpu_percent,omitempty"`
+	MemoryBytes   *int64      `json:"memory_bytes,omitempty"`
+	MemoryPercent *float64    `json:"memory_percent,omitempty"`
+	Uptime        string      `json:"uptime,omitempty"`
+	Certificate   *healthMark `json:"certificate,omitempty"`
+	PHPSettings   *healthMark `json:"php_settings,omitempty"`
+	HTTP          *healthHTTP `json:"http,omitempty"`
+}
+
+// healthMark is a checked sub-line of a service card (its certificate,
+// its PHP settings): absent when the card does not show that line.
+type healthMark struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
+// healthHTTP is the end-to-end probe's verdict, absent when the process
+// layer failed first and no request was made. URL is empty when there
+// was nothing to probe, and Note then says why.
+type healthHTTP struct {
+	URL  string `json:"url,omitempty"`
+	Code string `json:"code,omitempty"`
+	Note string `json:"note,omitempty"`
+	OK   bool   `json:"ok"`
+}
+
+type healthSummary struct {
+	Enabled       int      `json:"enabled"`
+	Healthy       int      `json:"healthy"`
+	Warning       int      `json:"warning"`
+	Failed        int      `json:"failed"`
+	FailedTargets []string `json:"failed_targets,omitempty"`
+}
+
+// healthLevelName maps cmdHealth's internal 0/1/2 severity to the names
+// the report publishes.
+func healthLevelName(level int) string {
+	switch level {
+	case 1:
+		return "warn"
+	case 2:
+		return "fail"
+	}
+	return "ok"
 }
 
 // healthRuntimeLabel names what actually runs one service, in the card

@@ -52,19 +52,32 @@ func containsSlash(s string) bool {
 	return false
 }
 
-func (a *App) cmdSSL(args []string) error {
+func (a *App) cmdSSL(args []string, jsonMode bool) error {
 	if len(args) < 2 {
 		a.usage()
 		return a.errf("ssl action and host are required")
 	}
-	action, target := args[0], args[1]
+	action := args[0]
 	switch action {
 	case "issue", "renew", "status", "remove", "install", "redirect", "sync":
 	default:
 		a.usage()
 		return a.errf("unknown ssl action: %s", action)
 	}
-	fl := parseFlags(args[2:])
+	// The target is the first argument after the action that is not a
+	// flag, rather than positionally args[1]. Without that,
+	// `wor ssl status --json example/web` takes "--json" for the host
+	// name and reports it as not found. Flags were already parsed from
+	// args[2:] and ignore non-flag arguments, so widening that to
+	// args[1:] changes nothing except allowing a flag to come first.
+	target := positionalArg(args[1:])
+	if target == "" {
+		// Deliberately no a.usage() here, unlike the guards above: usage
+		// prints to stdout, which under --json must carry the JSON
+		// document and nothing else.
+		return a.errf("ssl %s requires a host or domain/service target", action)
+	}
+	fl := parseFlags(args[1:])
 
 	primary, aliases, domain, service, err := a.resolveSSLTarget(target)
 	if err != nil {
@@ -204,21 +217,7 @@ func (a *App) cmdSSL(args []string) error {
 		return nil
 
 	case "status":
-		info := ssl.Status(a.Cfg.SSL, primary)
-		fmt.Fprintf(a.Out, "SSL Enabled          : %v\n", info.Enabled)
-		fmt.Fprintf(a.Out, "Current Provider     : %s\n", info.Provider)
-		fmt.Fprintf(a.Out, "Certificate File     : %s\n", orNone(info.CertFile))
-		fmt.Fprintf(a.Out, "Private Key File     : %s\n", orNone(info.KeyFile))
-		fmt.Fprintf(a.Out, "Certificate Expiration: %s\n", info.Expiration)
-		fmt.Fprintf(a.Out, "Auto Renew Status    : %s\n", orDefaultStr(info.AutoRenew, "disabled"))
-		if st, ok, _ := ssl.LoadState(a.Cfg.SSL, primary); ok {
-			label := onOffLabel(a.storedForceHTTPS(st))
-			if !st.Recorded() {
-				label += " (inherited; never set for this host)"
-			}
-			fmt.Fprintf(a.Out, "HTTP -> HTTPS Redirect: %s\n", label)
-		}
-		return nil
+		return a.sslStatus(primary, domain, service, jsonMode)
 
 	case "remove":
 		// The state has to go before the vhost is regenerated, not
@@ -284,6 +283,74 @@ func (a *App) cmdSSL(args []string) error {
 		a.ok("Custom SSL installed: %s", primary)
 		a.reportRedirect(primary, st.ForceHTTPSOr(false))
 		return nil
+	}
+	return nil
+}
+
+// sslStatusReport is the machine-readable form of `wor ssl status`.
+// Field names here are the published --json contract (see
+// SchemaVersion).
+type sslStatusReport struct {
+	Schema     int    `json:"schema"`
+	Host       string `json:"host"`
+	Domain     string `json:"domain"`
+	Service    string `json:"service"`
+	Enabled    bool   `json:"enabled"`
+	Provider   string `json:"provider"`
+	CertFile   string `json:"certificate_file,omitempty"`
+	KeyFile    string `json:"private_key_file,omitempty"`
+	Expiration string `json:"expiration"`
+	// AutoRenew carries the effective value the text prints, so
+	// "disabled" rather than an empty string when nothing is recorded.
+	AutoRenew string             `json:"auto_renew"`
+	Redirect  *sslRedirectReport `json:"force_https_redirect,omitempty"`
+}
+
+// sslRedirectReport is absent, not false, for a host with no recorded
+// SSL state -- matching the text output, which prints no redirect line
+// at all then rather than guessing a value for it.
+type sslRedirectReport struct {
+	Enabled bool `json:"enabled"`
+	// Inherited is true when this host has never had the redirect set
+	// and is following the host provider's default.
+	Inherited bool `json:"inherited"`
+}
+
+func (a *App) sslStatus(host, domain, service string, jsonMode bool) error {
+	info := ssl.Status(a.Cfg.SSL, host)
+	rep := sslStatusReport{
+		Schema:     SchemaVersion,
+		Host:       host,
+		Domain:     domain,
+		Service:    service,
+		Enabled:    info.Enabled,
+		Provider:   info.Provider,
+		CertFile:   info.CertFile,
+		KeyFile:    info.KeyFile,
+		Expiration: info.Expiration,
+		AutoRenew:  orDefaultStr(info.AutoRenew, "disabled"),
+	}
+	if st, ok, _ := ssl.LoadState(a.Cfg.SSL, host); ok {
+		rep.Redirect = &sslRedirectReport{
+			Enabled:   a.storedForceHTTPS(st),
+			Inherited: !st.Recorded(),
+		}
+	}
+	if jsonMode {
+		return a.writeJSON(rep)
+	}
+	fmt.Fprintf(a.Out, "SSL Enabled          : %v\n", rep.Enabled)
+	fmt.Fprintf(a.Out, "Current Provider     : %s\n", rep.Provider)
+	fmt.Fprintf(a.Out, "Certificate File     : %s\n", orNone(rep.CertFile))
+	fmt.Fprintf(a.Out, "Private Key File     : %s\n", orNone(rep.KeyFile))
+	fmt.Fprintf(a.Out, "Certificate Expiration: %s\n", rep.Expiration)
+	fmt.Fprintf(a.Out, "Auto Renew Status    : %s\n", rep.AutoRenew)
+	if rep.Redirect != nil {
+		label := onOffLabel(rep.Redirect.Enabled)
+		if rep.Redirect.Inherited {
+			label += " (inherited; never set for this host)"
+		}
+		fmt.Fprintf(a.Out, "HTTP -> HTTPS Redirect: %s\n", label)
 	}
 	return nil
 }

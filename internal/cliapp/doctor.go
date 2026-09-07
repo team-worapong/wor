@@ -35,34 +35,6 @@ func (a *App) workspaceInitialized() bool {
 	return true
 }
 
-// statusLine prints one checklist line with a ✓/⚠/✗ glyph, colored
-// green/yellow/red on a TTY (plain glyph, no color, otherwise -- see
-// colorEnabled in statusview.go). The glyph itself always prints
-// regardless of color support, since it carries meaning on its own.
-func (a *App) statusLine(state, format string, args ...interface{}) {
-	var glyph, code string
-	switch state {
-	case "ok":
-		glyph, code = "✓", ansiGreen // ✓
-	case "warn":
-		glyph, code = "⚠", ansiYellow // ⚠
-	default:
-		glyph, code = "✗", ansiRed // ✗
-	}
-	sym := colorize(a.colorEnabled(), code, glyph)
-	fmt.Fprintf(a.Out, "  %s %s\n", sym, fmt.Sprintf(format, args...))
-}
-
-func (a *App) docOK(format string, args ...interface{})   { a.statusLine("ok", format, args...) }
-func (a *App) docWarn(format string, args ...interface{}) { a.statusLine("warn", format, args...) }
-
-// docFail prints a ✗ line and always returns true, so callers combine
-// it into their running fail flag with `fail = a.docFail(...) || fail`.
-func (a *App) docFail(format string, args ...interface{}) bool {
-	a.statusLine("fail", format, args...)
-	return true
-}
-
 // cmdDoctor is a read-only health report: a short Environment block
 // plus a ✓/⚠/✗ checklist of the runtimes, database engines, and tools
 // WOR can use. Unlike the old bash doctor.sh port, it has no closing
@@ -73,32 +45,33 @@ func (a *App) docFail(format string, args ...interface{}) bool {
 // installed, or the workspace hasn't been initialized. Database
 // engines and secondary tools (PM2, git, zip, gzip) are always
 // optional -- missing ones print a ⚠, never a ✗.
-func (a *App) cmdDoctor(args []string) (bool, error) {
+func (a *App) cmdDoctor(args []string, jsonMode bool) (bool, error) {
 	fail := false
 	provider := a.Cfg.HostProviderName()
+	r := a.newReporter(jsonMode)
 
-	fmt.Fprintln(a.Out, "WOR Doctor")
-	fmt.Fprintln(a.Out, "==========")
-	fmt.Fprintln(a.Out)
+	r.Line("WOR Doctor")
+	r.Line("==========")
+	r.Blank()
 
-	fmt.Fprintln(a.Out, "Environment")
-	fmt.Fprintf(a.Out, "  OS            : %s\n", osutil.OSName())
+	r.Section("Environment")
+	r.Field("OS", osutil.OSName())
 	if distro, ok := osutil.LinuxDistro(); ok {
-		fmt.Fprintf(a.Out, "  Distro        : %s\n", distro)
+		r.Field("Distro", distro)
 	}
-	fmt.Fprintf(a.Out, "  Build         : %s/%s\n", runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintf(a.Out, "  WOR_ENV       : %s\n", a.Cfg.Env)
-	fmt.Fprintf(a.Out, "  WOR_HOME      : %s\n", a.Cfg.WorHome)
-	fmt.Fprintf(a.Out, "  Config        : %s\n", a.Cfg.ConfigFile)
-	fmt.Fprintf(a.Out, "  Host Provider : %s\n", provider)
+	r.Field("Build", fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH))
+	r.Field("WOR_ENV", a.Cfg.Env)
+	r.Field("WOR_HOME", a.Cfg.WorHome)
+	r.Field("Config", a.Cfg.ConfigFile)
+	r.Field("Host Provider", provider)
 	if a.workspaceInitialized() {
-		a.docOK("Workspace initialized")
+		r.OK("Workspace initialized")
 	} else {
-		fail = a.docFail("Workspace not initialized (run: wor setup)") || fail
+		fail = r.Fail("Workspace not initialized (run: wor setup)") || fail
 	}
-	fmt.Fprintln(a.Out)
+	r.Blank()
 
-	fmt.Fprintln(a.Out, "Runtimes")
+	r.Section("Runtimes")
 
 	// Host provider(s): show each one that's actually installed
 	// (marking whichever is configured as active), regardless of
@@ -112,9 +85,9 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 		if provider == "nginx" {
 			label += " (active)"
 		}
-		a.docOK("%s %s", label, version)
+		r.OK("%s %s", label, version)
 	} else if provider == "nginx" {
-		fail = a.docFail("Nginx not installed (host provider mismatch)") || fail
+		fail = r.Fail("Nginx not installed (host provider mismatch)") || fail
 	}
 
 	apacheP, _ := hostprovider.New("apache", a.Cfg)
@@ -123,9 +96,9 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 		if provider == "apache" {
 			label += " (active)"
 		}
-		a.docOK("%s %s", label, osutil.RunVersion(bin, "-v"))
+		r.OK("%s %s", label, osutil.RunVersion(bin, "-v"))
 	} else if provider == "apache" {
-		fail = a.docFail("Apache not installed (host provider mismatch)") || fail
+		fail = r.Fail("Apache not installed (host provider mismatch)") || fail
 	}
 
 	phpBin := "php"
@@ -133,34 +106,34 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 		phpBin = "php-fpm"
 	}
 	if osutil.Exists(phpBin) {
-		a.docOK("%s", osutil.RunVersion(phpBin, "--version"))
+		r.OK("%s", osutil.RunVersion(phpBin, "--version"))
 	} else {
-		fail = a.docFail("PHP not installed") || fail
+		fail = r.Fail("PHP not installed") || fail
 	}
 	if versions := phpfpm.DetectVersions(); len(versions) > 0 {
-		a.docOK("PHP-FPM per-service pools available: %s", phpVersionNumbers(versions))
+		r.OK("PHP-FPM per-service pools available: %s", phpVersionNumbers(versions))
 	} else if _, ok := hostprovider.PHPFPMEndpoint(a.Cfg); ok {
-		a.docWarn("no per-version PHP-FPM pool.d layout detected; php services use the shared PHP_FPM_ENDPOINT")
+		r.Warn("no per-version PHP-FPM pool.d layout detected; php services use the shared PHP_FPM_ENDPOINT")
 	} else {
-		a.docWarn("PHP-FPM not detected (per-version or PHP_FPM_ENDPOINT); php services will fail their runtime check")
+		r.Warn("PHP-FPM not detected (per-version or PHP_FPM_ENDPOINT); php services will fail their runtime check")
 	}
 
 	if osutil.Exists("node") {
-		a.docOK("Node.js %s", osutil.RunVersion("node", "--version"))
+		r.OK("Node.js %s", osutil.RunVersion("node", "--version"))
 	} else {
-		fail = a.docFail("Node.js not installed") || fail
+		fail = r.Fail("Node.js not installed") || fail
 	}
 
 	if osutil.Exists("pm2") {
-		a.docOK("PM2 %s", pm2.Version())
+		r.OK("PM2 %s", pm2.Version())
 	} else {
-		a.docWarn("PM2 not installed")
+		r.Warn("PM2 not installed")
 	}
 
 	if osutil.Exists("go") {
-		a.docOK("%s", osutil.RunVersion("go", "version"))
+		r.OK("%s", osutil.RunVersion("go", "version"))
 	} else {
-		fail = a.docFail("Go not installed") || fail
+		fail = r.Fail("Go not installed") || fail
 	}
 
 	pythonBin := "python3"
@@ -168,58 +141,58 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 		pythonBin = "python"
 	}
 	if osutil.Exists(pythonBin) {
-		a.docOK("%s", osutil.RunVersion(pythonBin, "--version"))
+		r.OK("%s", osutil.RunVersion(pythonBin, "--version"))
 	} else {
-		fail = a.docFail("Python not installed") || fail
+		fail = r.Fail("Python not installed") || fail
 	}
-	fmt.Fprintln(a.Out)
+	r.Blank()
 
-	fmt.Fprintln(a.Out, "Database")
+	r.Section("Database")
 	if bin, ok := dbbackup.MySQLClientBin(); ok {
-		a.docOK("MySQL Client %s", osutil.RunVersion(bin, "--version"))
+		r.OK("MySQL Client %s", osutil.RunVersion(bin, "--version"))
 	} else {
-		a.docWarn("MySQL Client not installed")
+		r.Warn("MySQL Client not installed")
 	}
 	if bin, ok := dbbackup.MySQLServerBin(); ok {
-		a.docOK("MySQL Server %s", osutil.RunVersion(bin, "--version"))
+		r.OK("MySQL Server %s", osutil.RunVersion(bin, "--version"))
 	} else {
-		a.docWarn("MySQL Server not installed")
+		r.Warn("MySQL Server not installed")
 	}
 	if bin, ok := dbbackup.MariaDBBin(); ok {
-		a.docOK("MariaDB %s", osutil.RunVersion(bin, "--version"))
+		r.OK("MariaDB %s", osutil.RunVersion(bin, "--version"))
 	} else {
-		a.docWarn("MariaDB not installed")
+		r.Warn("MariaDB not installed")
 	}
 	if bin, ok := dbbackup.ClientBin("postgresql"); ok {
-		a.docOK("PostgreSQL %s", osutil.RunVersion(bin, "--version"))
+		r.OK("PostgreSQL %s", osutil.RunVersion(bin, "--version"))
 	} else {
-		a.docWarn("PostgreSQL not installed")
+		r.Warn("PostgreSQL not installed")
 	}
 	if bin, ok := dbbackup.RedisBin(); ok {
-		a.docOK("Redis %s", osutil.RunVersion(bin, "--version"))
+		r.OK("Redis %s", osutil.RunVersion(bin, "--version"))
 	} else {
-		a.docWarn("Redis not installed")
+		r.Warn("Redis not installed")
 	}
 	if bin, ok := dbbackup.ClientBin("sqlite"); ok {
-		a.docOK("SQLite %s", osutil.RunVersion(bin, "--version"))
+		r.OK("SQLite %s", osutil.RunVersion(bin, "--version"))
 	} else {
-		a.docWarn("SQLite not installed")
+		r.Warn("SQLite not installed")
 	}
-	fmt.Fprintln(a.Out)
+	r.Blank()
 
-	fmt.Fprintln(a.Out, "Other Tools")
+	r.Section("Other Tools")
 	for _, t := range []struct{ bin, label string }{
 		{"git", "Git"},
 		{"zip", "Zip"},
 		{"gzip", "Gzip"},
 	} {
 		if osutil.Exists(t.bin) {
-			a.docOK("%s %s", t.label, osutil.RunVersion(t.bin, versionFlagFor(t.bin)))
+			r.OK("%s %s", t.label, osutil.RunVersion(t.bin, versionFlagFor(t.bin)))
 		} else {
-			a.docWarn("%s not installed", t.label)
+			r.Warn("%s not installed", t.label)
 		}
 	}
-	fmt.Fprintln(a.Out)
+	r.Blank()
 
 	// Security: neither check here ever sets fail -- both are hygiene/
 	// hardening advice, not "wor itself is broken" the way a missing
@@ -227,22 +200,22 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 	// but it's the deployed site that's affected, not wor's own
 	// ability to function, so this follows the same severity
 	// convention as the optional database engines/tools above (⚠, never ✗).
-	fmt.Fprintln(a.Out, "Security")
+	r.Section("Security")
 	if osutil.IsWindows() {
 		// Unix owner/group/other permission bits don't carry the same
 		// meaning on Windows (ACLs are a completely different model),
 		// so both checks below would just be noise there -- skipped
 		// entirely rather than printing something misleading.
-		a.docOK("Permission checks skipped (Windows uses a different access-control model)")
+		r.OK("Permission checks skipped (Windows uses a different access-control model)")
 	} else {
-		a.checkWorHomeOwnership()
-		a.checkOperatorIdentity()
-		a.checkCertificateRenewalSchedule()
+		a.checkWorHomeOwnership(r)
+		a.checkOperatorIdentity(r)
+		a.checkCertificateRenewalSchedule(r)
 
 		if loose := scanLooseEnvFiles(a.Cfg.WorHome); len(loose) > 0 {
-			a.docWarn(".env file(s) readable by any account on this machine -- %d found:", len(loose))
+			r.Warn(".env file(s) readable by any account on this machine -- %d found:", len(loose))
 			for _, p := range loose {
-				fmt.Fprintf(a.Out, "      %s\n", p)
+				r.Item("%s", p)
 			}
 			// 0640, not 0600. A service that runs under its own account
 			// (a per-service php-fpm pool, and every systemd service
@@ -252,10 +225,10 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 			// is a poor outcome for following a health check's advice.
 			// 0640 closes it to everyone else and leaves that group read
 			// intact.
-			a.info("Fix: find %s \\( -name '.env' -o -name '.env.*' \\) -exec chmod 640 {} +", a.Cfg.WorHome)
-			a.info("(0640, not 0600: a service running under its own account reads .env through its group.)")
+			r.Note("Fix: find %s \\( -name '.env' -o -name '.env.*' \\) -exec chmod 640 {} +", a.Cfg.WorHome)
+			r.Note("(0640, not 0600: a service running under its own account reads .env through its group.)")
 		} else if dirExists(a.Cfg.WorHome) {
-			a.docOK("No world-readable .env files found under WOR_HOME")
+			r.OK("No world-readable .env files found under WOR_HOME")
 		}
 
 		if provider == "nginx" || provider == "apache" {
@@ -263,15 +236,15 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 			case osutil.IsDebianFamily():
 				webUser := webServerRunUser(provider)
 				if !webUserExists(webUser) {
-					a.docWarn("could not resolve web server user %q on this system -- WOR_HOME reachability not checked", webUser)
+					r.Warn("could not resolve web server user %q on this system -- WOR_HOME reachability not checked", webUser)
 				} else if blocked := checkWorHomeReachability(a, webUser); len(blocked) > 0 {
-					a.docWarn("WOR_HOME not reachable by web server user %q -- %d path(s) block traversal:", webUser, len(blocked))
+					r.Warn("WOR_HOME not reachable by web server user %q -- %d path(s) block traversal:", webUser, len(blocked))
 					for _, p := range blocked {
-						fmt.Fprintf(a.Out, "      %s\n", p)
+						r.Item("%s", p)
 					}
-					a.info("Fix: %s", worHomeReachabilityFixCommand(webUser, blocked))
+					r.Note("Fix: %s", worHomeReachabilityFixCommand(webUser, blocked))
 				} else {
-					a.docOK("WOR_HOME reachable by web server user (%s)", webUser)
+					r.OK("WOR_HOME reachable by web server user (%s)", webUser)
 				}
 			case osutil.IsLinux():
 				// RHEL/CentOS/Fedora-family: not auto-checked -- wor
@@ -279,7 +252,7 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 				// confident about the right fix (see install_rhel in
 				// scripts/install.sh), and SELinux can independently
 				// block access even when POSIX permissions are fine.
-				a.docWarn("Non-Debian Linux detected -- WOR_HOME permission issues are possible and not auto-checked here. If a static/php site 500s unexpectedly, check both regular permissions (owner/group/other) AND SELinux context (semanage fcontext / chcon) along the full WOR_HOME path")
+				r.Warn("Non-Debian Linux detected -- WOR_HOME permission issues are possible and not auto-checked here. If a static/php site 500s unexpectedly, check both regular permissions (owner/group/other) AND SELinux context (semanage fcontext / chcon) along the full WOR_HOME path")
 			default:
 				// macOS: nginx installed via Homebrew commonly runs as
 				// the logged-in user rather than a separate system
@@ -289,9 +262,28 @@ func (a *App) cmdDoctor(args []string) (bool, error) {
 			}
 		}
 	}
-	fmt.Fprintln(a.Out)
+	r.Blank()
 
+	if jsonMode {
+		return fail, a.writeJSON(doctorReport{
+			Schema:      SchemaVersion,
+			Environment: r.Fields(),
+			Checks:      r.Checks(),
+			Failed:      fail,
+		})
+	}
 	return fail, nil
+}
+
+// doctorReport is the machine-readable form of `wor doctor`. Failed is
+// the same verdict the exit code carries, restated here because a
+// reader that captured stdout should not also have to have captured the
+// process status to know whether anything was wrong.
+type doctorReport struct {
+	Schema      int           `json:"schema"`
+	Environment []reportField `json:"environment"`
+	Checks      []reportCheck `json:"checks"`
+	Failed      bool          `json:"failed"`
 }
 
 // scanLooseEnvFiles walks worHome looking for .env / .env.* files
@@ -504,7 +496,7 @@ func (a *App) cmdReset(args []string) error {
 // It is not a hypothetical state: osutil.ClaimOwnership exists because
 // WOR_HOME has been found root-owned in the field, left behind by an
 // older install.
-func (a *App) checkWorHomeOwnership() {
+func (a *App) checkWorHomeOwnership(r *reporter) {
 	if !dirExists(a.Cfg.WorHome) {
 		return
 	}
@@ -520,8 +512,8 @@ func (a *App) checkWorHomeOwnership() {
 	if os.Geteuid() == 0 {
 		return
 	}
-	a.docWarn("WOR_HOME (%s) is owned by root, but you are not", a.Cfg.WorHome)
-	a.info("Certificate sync cannot run while it is. Fix: sudo chown -R $(id -un) %s", a.Cfg.WorHome)
+	r.Warn("WOR_HOME (%s) is owned by root, but you are not", a.Cfg.WorHome)
+	r.Note("Certificate sync cannot run while it is. Fix: sudo chown -R $(id -un) %s", a.Cfg.WorHome)
 }
 
 // checkOperatorIdentity reports how many different accounts have written
@@ -547,7 +539,7 @@ func (a *App) checkWorHomeOwnership() {
 // it -- rather than walking every file: the divergence shows at exactly
 // that level, and a full walk of every service's node_modules would cost
 // far more than the answer is worth.
-func (a *App) checkOperatorIdentity() {
+func (a *App) checkOperatorIdentity(r *reporter) {
 	if !dirExists(a.Cfg.Domains) {
 		return
 	}
@@ -619,12 +611,12 @@ func (a *App) checkOperatorIdentity() {
 			}
 		}
 		if len(wrong) == 0 {
-			a.docOK("Service tree is owned by the configured wor account (%s)", want)
+			r.OK("Service tree is owned by the configured wor account (%s)", want)
 			return
 		}
-		a.docWarn("%d director(ies) are not owned by the configured wor account (%s)", len(wrong), want)
+		r.Warn("%d director(ies) are not owned by the configured wor account (%s)", len(wrong), want)
 		for _, uid := range wrong {
-			fmt.Fprintf(a.Out, "      %s owns %s\n", accountLabel(uid), sample[uid])
+			r.Item("%s owns %s", accountLabel(uid), sample[uid])
 		}
 		// Deliberately not `sudo chown -R <want> <domains>`, which this
 		// used to print. Two things were wrong with it. It reaches every
@@ -638,28 +630,28 @@ func (a *App) checkOperatorIdentity() {
 		// lost the setgid bit and the pool's group read as well, and
 		// nothing about a chown puts those back. `wor service chown`
 		// does the re-grant afterwards.
-		a.info("Fix, per service: wor service chown <domain>/<service>")
+		r.Note("Fix, per service: wor service chown <domain>/<service>")
 		return
 	}
 
 	if len(uids) == 1 {
 		if uids[0] == os.Getuid() {
-			a.docOK("Service tree is owned by a single account (%s)", accountLabel(uids[0]))
+			r.OK("Service tree is owned by a single account (%s)", accountLabel(uids[0]))
 		} else {
-			a.docWarn("Service tree is owned by %s, but you are running wor as %s",
+			r.Warn("Service tree is owned by %s, but you are running wor as %s",
 				accountLabel(uids[0]), accountLabel(os.Getuid()))
-			a.info("Nothing pins that down yet. Set wor_user in %s/host.env to make it the account wor expects.", a.Cfg.Configs)
+			r.Note("Nothing pins that down yet. Set wor_user in %s/host.env to make it the account wor expects.", a.Cfg.Configs)
 		}
 		return
 	}
 
-	a.docWarn("Service tree is split across %d accounts -- wor assumes one operator", len(uids))
+	r.Warn("Service tree is split across %d accounts -- wor assumes one operator", len(uids))
 	for _, uid := range uids {
-		fmt.Fprintf(a.Out, "      %s owns %s\n", accountLabel(uid), sample[uid])
+		r.Item("%s owns %s", accountLabel(uid), sample[uid])
 	}
-	a.info("You are currently %s. Whichever account did not create a directory cannot write it,", accountLabel(os.Getuid()))
-	a.info("so `wor deploy` and `wor source pull` will fail for that half of the tree.")
-	a.info("Set wor_user in %s/host.env to name the account they should all be.", a.Cfg.Configs)
+	r.Note("You are currently %s. Whichever account did not create a directory cannot write it,", accountLabel(os.Getuid()))
+	r.Note("so `wor deploy` and `wor source pull` will fail for that half of the tree.")
+	r.Note("Set wor_user in %s/host.env to name the account they should all be.", a.Cfg.Configs)
 }
 
 // isServiceAccountUID reports whether uid belongs to one of the
@@ -697,18 +689,18 @@ func accountLabel(uid int) string {
 // right schedule looks like differs per platform and per operator, and
 // installing a root-level timer unprompted is not something a read-only
 // health check should do.
-func (a *App) checkCertificateRenewalSchedule() {
+func (a *App) checkCertificateRenewalSchedule(r *reporter) {
 	hosts := a.letsEncryptHosts()
 	if len(hosts) == 0 {
 		return
 	}
 	if certbotRenewalScheduled() {
-		a.docOK("Certificate renewal is scheduled (%d Let's Encrypt host(s))", len(hosts))
+		r.OK("Certificate renewal is scheduled (%d Let's Encrypt host(s))", len(hosts))
 		return
 	}
-	a.docWarn("%d Let's Encrypt host(s) but no renewal schedule found on this machine", len(hosts))
-	a.info("Nothing will renew them, and they expire in 90 days. Check with: sudo certbot renew --dry-run")
-	a.info("Then schedule `certbot renew` (a systemd timer on Linux, a launchd job or cron entry on macOS).")
+	r.Warn("%d Let's Encrypt host(s) but no renewal schedule found on this machine", len(hosts))
+	r.Note("Nothing will renew them, and they expire in 90 days. Check with: sudo certbot renew --dry-run")
+	r.Note("Then schedule `certbot renew` (a systemd timer on Linux, a launchd job or cron entry on macOS).")
 }
 
 // letsEncryptHosts lists the registered hosts whose recorded certificate

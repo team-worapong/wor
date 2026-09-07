@@ -93,17 +93,33 @@ func (a *App) Run(args []string) int {
 	}
 	cmd, rest := args[0], args[1:]
 
+	// Resolved before anything else can fail, so that every exit below
+	// -- including the ones taken before the command runs at all -- can
+	// put its failure on stdout as the one JSON document a --json caller
+	// is entitled to parse.
+	jsonMode := parseFlags(rest).Has("json")
+	if jsonMode && !supportsJSON(cmd, rest) {
+		// jsonMode, not false: the invariant a reader relies on is that
+		// --json puts exactly one JSON document on stdout, and asking
+		// for it on the wrong command is no reason to leave stdout
+		// empty and the reader guessing.
+		return a.failEarly(jsonMode, fmt.Sprintf("--json is not supported by `wor %s`.", cmd),
+			"Machine-readable output is available on the read-only reports:",
+			"  wor version --json",
+			"  wor doctor --json",
+			"  wor health --json",
+			"  wor ssl status <host|domain/service> --json")
+	}
+
 	if osutil.IsSudoElevated() && !allowsSudoElevation(cmd, rest) {
-		fmt.Fprintln(a.Err, "ERROR: do not run wor via sudo (e.g. `sudo wor host add ...`).")
-		fmt.Fprintln(a.Err, "Run it as your normal user instead -- wor will ask for elevated (sudo)")
-		fmt.Fprintln(a.Err, "permission itself, only for the specific actions that actually need it.")
-		return 1
+		return a.failEarly(jsonMode, "do not run wor via sudo (e.g. `sudo wor host add ...`).",
+			"Run it as your normal user instead -- wor will ask for elevated (sudo)",
+			"permission itself, only for the specific actions that actually need it.")
 	}
 
 	if requiresInitializedWorkspace(cmd) && !a.workspaceInitialized() {
-		fmt.Fprintln(a.Err, "ERROR: workspace not initialized.")
-		fmt.Fprintln(a.Err, "Run `wor setup` first, then re-run this command.")
-		return 1
+		return a.failEarly(jsonMode, "workspace not initialized.",
+			"Run `wor setup` first, then re-run this command.")
 	}
 
 	if commandNeedsLock(cmd, rest) {
@@ -115,6 +131,9 @@ func (a *App) Run(args []string) int {
 			if errors.Is(err, worlock.ErrLockHeld) && skipsWhenLockBusy(cmd, rest) {
 				a.reportLockBusySkip(positionalArg(rest[1:]))
 				return 0
+			}
+			if jsonMode {
+				a.writeJSONError(err.Error())
 			}
 			fmt.Fprintf(a.Err, "ERROR: %s\n", err)
 			// Only a genuinely held lock means "wait and retry". Saying
@@ -137,14 +156,14 @@ func (a *App) Run(args []string) int {
 	var err error
 	switch cmd {
 	case "version", "--version", "-v":
-		a.cmdVersion()
+		err = a.cmdVersion(jsonMode)
 	case "setup":
 		err = a.cmdSetup(rest)
 	case "upgrade":
 		err = a.cmdUpgrade(rest)
 	case "doctor":
 		var failed bool
-		failed, err = a.cmdDoctor(rest)
+		failed, err = a.cmdDoctor(rest, jsonMode)
 		if err == nil && failed {
 			return 1
 		}
@@ -156,7 +175,7 @@ func (a *App) Run(args []string) int {
 		}
 	case "health":
 		var failed bool
-		failed, err = a.cmdHealth(rest)
+		failed, err = a.cmdHealth(rest, jsonMode)
 		if err == nil && failed {
 			return 1
 		}
@@ -185,7 +204,7 @@ func (a *App) Run(args []string) int {
 	case "rollback":
 		err = a.cmdRollback(rest)
 	case "ssl":
-		err = a.cmdSSL(rest)
+		err = a.cmdSSL(rest, jsonMode)
 	case "info":
 		err = a.cmdInfo(rest)
 	case "path":
@@ -199,10 +218,30 @@ func (a *App) Run(args []string) int {
 		return 1
 	}
 	if err != nil {
+		if jsonMode {
+			a.writeJSONError(err.Error())
+		}
 		fmt.Fprintf(a.Err, "ERROR: %s\n", err)
 		return 1
 	}
 	return 0
+}
+
+// failEarly reports a failure that happened before the subcommand ran:
+// the "ERROR: <summary>" line plus any following advice on stderr, as
+// always, and -- when the caller asked for --json -- the JSON error
+// document on stdout, so a reader never has to tell an empty stdout
+// apart from a wor that printed nothing. Returns the exit code Run
+// gives back.
+func (a *App) failEarly(jsonMode bool, summary string, advice ...string) int {
+	if jsonMode {
+		a.writeJSONError(summary)
+	}
+	fmt.Fprintf(a.Err, "ERROR: %s\n", summary)
+	for _, line := range advice {
+		fmt.Fprintln(a.Err, line)
+	}
+	return 1
 }
 
 // allowsSudoElevation decides whether cmd/rest may run under `sudo`,

@@ -296,7 +296,8 @@ func (a *App) cmdCreate(args []string) error {
 			if preferredHost != "" {
 				sslArgs = append(sslArgs, "--preferred="+preferredHost)
 			}
-			if err := a.cmdSSL(sslArgs); err != nil {
+			// false: `wor create` is interactive and has no --json form.
+			if err := a.cmdSSL(sslArgs, false); err != nil {
 				return err
 			}
 		}

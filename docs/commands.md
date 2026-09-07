@@ -77,6 +77,50 @@ conflict, `usage.go`/the actual code behavior wins).
   Always requires typing `RESET` to confirm; there is no flag to skip this
   confirmation.
 
+## Machine-readable output (`--json`)
+
+Four read-only reports can print one JSON document on stdout instead of
+their text, for a program reading wor rather than a person:
+
+```bash
+wor version --json
+wor doctor --json
+wor health --json
+wor ssl status <host|domain/service> --json
+```
+
+No other command accepts `--json`; asking for it elsewhere is an error
+that names the four that do. Mutating commands (`service restart`,
+`ssl issue`, `deploy`) give a caller an exit code and progress as it
+runs, which is what driving them needs; interactive ones (`create`,
+`setup`) have no output shape to publish. See DESIGN.md section 23 for
+why this is a deliberate allowlist rather than a flag on everything.
+
+**The contract:**
+
+- Every document carries `"schema": 1`. Check it before trusting field
+  names: wor and whatever reads it are upgraded independently. The
+  number changes when an existing field changes meaning or disappears --
+  never for a newly added field, which older readers simply ignore.
+- **stdout always carries exactly one JSON document**, including on
+  failure. A run that cannot produce its report -- a busy workspace
+  lock, an uninitialized workspace, a bad target -- prints
+  `{"schema":1,"error":"..."}` instead. Empty stdout never has to be
+  interpreted.
+- The human `ERROR:` line still goes to **stderr**, unchanged. Read
+  stdout for the data, stderr for the explanation.
+- **Exit codes are unchanged.** `wor doctor --json` and
+  `wor health --json` still exit 1 when something is wrong, and repeat
+  that verdict in the document as `"failed"`.
+
+`doctor` returns an ordered `environment` list plus `checks`, each with
+`section`, `level` (`ok` / `warn` / `fail`), the printed `message`, and
+any `notes` (the indented paths and `[INFO]` fix lines that follow a
+check). `health` returns `host` figures, one entry per service with its
+own `level`, and a `summary`. Figures that were not measured are absent
+fields, never zeros -- the same rule the text output follows by hiding
+the line.
+
 ## wor create
 
 ```

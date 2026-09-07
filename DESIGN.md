@@ -985,6 +985,78 @@ re-render, and the inspections). Full user-facing rules live in
 `docs/services.md`; `docs/commands.md` summarises and links there rather
 than restating an allowlist in two places.
 
+## 23. Machine-readable output (`--json`) on the read-only reports
+
+WOR HCP -- the web control panel that manages a wor host -- drives wor
+by running it and reading its stdout. Until now that meant screen
+scraping: its dashboard split `wor doctor` output on the ✓/⚠/✗ glyphs
+and treated any line without a colon as a section heading. That works
+until the day someone rewords a check or reflows a block, at which point
+the panel quietly shows a wrong or empty health report and nothing on
+either side reports a problem. Reformatting a health report is not
+supposed to be a breaking change.
+
+So the four read-only reports gained a `--json` form: `wor version`,
+`wor doctor`, `wor health`, and `wor ssl status`. Each prints one JSON
+document on stdout instead of its text, with the same exit code it
+always had.
+
+**Only those four.** `--json` is an allowlist (`supportsJSON`), and
+asking for it anywhere else is a usage error rather than a silently
+ignored flag. Two reasons, neither of which expires:
+
+- Every payload published is a shape that has to keep working. Field
+  names become a contract the moment something parses them, so each
+  command converted is a permanent obligation, and taking on twenty-odd
+  of those to serve one reader that needs four is a bad trade.
+- The commands left out do not want a document anyway. A mutating
+  command (`service restart`, `ssl issue`, `deploy`) gives a caller an
+  exit code and progress as it happens, which is what driving it
+  actually needs -- a summary printed after the fact describes nothing
+  useful about a job that was being watched. And an interactive command
+  (`create`, `setup`) has no output shape at all, only a conversation;
+  automating those needs the non-interactive commands they wrap, not a
+  flag here.
+
+Adding the fifth is a decision to make when a real screen needs it, one
+command at a time, not a matrix to fill in ahead of demand.
+
+**Every document carries `"schema": 1`** (`cliapp.SchemaVersion`). wor
+and its readers are installed and upgraded independently -- HCP ships
+its own releases on its own cadence -- so a reader routinely meets a wor
+older or newer than the one it was written against and has no other way
+to tell. The number is bumped when an existing field changes meaning or
+disappears; adding a field does not need a bump, since a reader that
+does not know a field ignores it.
+
+**stdout carries exactly one JSON document, always.** That includes
+every way the run can fail: a busy workspace lock, an uninitialized
+workspace, a refusal to run under sudo, `--json` asked for on the wrong
+command, or an error from the command itself. All of them put
+`{"schema":1,"error":"..."}` on stdout and keep the human `ERROR:` line
+on stderr where it has always been. Without that rule the first thing
+every reader has to write is a guess about whether empty stdout means
+"healthy and silent" or "wor died", and it would guess wrong during
+exactly the incident the panel exists for.
+
+**Exit codes are untouched.** `wor doctor --json` and `wor health --json`
+still exit 1 on a real failure, and the verdict is repeated in the
+document as `"failed"` so a reader that captured stdout does not also
+need the process status.
+
+Implementation: `internal/cliapp/report.go` holds `SchemaVersion`, the
+`--json` allowlist, the JSON writer and the error document. The text
+output was not rewritten around JSON -- it renders and records in one
+pass. Checklist-shaped commands (`doctor`, `version`) print through a
+`reporter`, which writes each line and appends it to the report at the
+same time; `health`, whose output is card-shaped rather than a
+checklist, builds its report struct alongside its own printing. Both
+decide the writer once at the top of the run (`io.Discard` under
+`--json`) rather than testing a flag at each of the several dozen print
+sites, because the failure mode of the alternative is one forgotten
+line silently corrupting the document. The text these commands emit is
+byte-for-byte what it was before this section was written.
+
 ## Known gaps / still to verify
 
 - **Section 22 (per-service PHP settings) has been rehearsed on both a
