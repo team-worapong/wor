@@ -524,7 +524,7 @@ func (a *App) offerCloneDeploy(domain, service, target string) error {
 		return nil
 	}
 	a.info("A fresh clone has no installed dependencies or build output (node_modules, go binary, ...).")
-	if a.confirmYesDefaultNo(fmt.Sprintf("Deploy %s now (install deps + build + restart)?", target)) {
+	if a.offer(fmt.Sprintf("Deploy %s now (install deps + build + restart)?", target), false) {
 		return a.cmdDeploy([]string{target, "--no-pull", "--force"})
 	}
 	a.info("Skipped. Run `wor deploy %s --no-pull --force` before starting the service.", target)

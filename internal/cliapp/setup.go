@@ -238,7 +238,7 @@ func (a *App) cmdSetup(args []string) error {
 		}
 	}
 
-	if a.confirmYesDefaultNo("Would you like to create your first website? (y to run wor create)") {
+	if a.offer("Would you like to create your first website? (y to run wor create)", false) {
 		return a.cmdCreate(nil)
 	}
 	return nil

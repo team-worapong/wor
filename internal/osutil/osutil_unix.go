@@ -77,6 +77,9 @@ func SudoCommand(name string, args ...string) (*exec.Cmd, error) {
 	if IsRoot() {
 		return exec.Command(name, args...), nil
 	}
+	if nonInteractive {
+		return exec.Command("sudo", append([]string{"-n", name}, args...)...), nil
+	}
 	if err := confirmElevation(fmt.Sprintf("run '%s' with elevated (sudo) privileges", name)); err != nil {
 		return nil, err
 	}

@@ -115,7 +115,7 @@ func (a *App) cmdRollback(args []string) error {
 		a.info("%d stash entry/entries from before rollback still exist -- review with `git stash list` in %s", stashCount, dir)
 	}
 
-	if a.confirmYesDefaultNo(fmt.Sprintf("Deploy %s now?", target)) {
+	if a.offer(fmt.Sprintf("Deploy %s now?", target), false) {
 		// --no-pull: the reset already put the tree at origin/<branch>,
 		// pulling again would be a no-op. --force: rollback's own
 		// git reset --hard means before == after from deploy's point of

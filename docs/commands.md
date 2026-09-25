@@ -121,6 +121,40 @@ own `level`, and a `summary`. Figures that were not measured are absent
 fields, never zeros -- the same rule the text output follows by hiding
 the line.
 
+## Running wor from a program (`--non-interactive`)
+
+Many commands ask questions. When nobody can answer -- stdin has
+reached its end before a line was typed -- the command stops with
+`ERROR: no answer to "<question>" (stdin closed) -- cancelled.` and
+exit code 1. **A question is never answered with its default** just
+because input ran out. (Until this was fixed, it was: a `wor` run with
+no stdin accepted every `[Y/n]`, including `wor domain remove`'s Web
+Data question.) Pressing Enter in a terminal still takes the default,
+and piped answers (`printf 'y\n' | wor ...`) still work until they run
+out.
+
+For a caller that is a program -- cron, WOR HCP -- pass
+`--non-interactive` (anywhere on the command line) or set
+`WOR_NONINTERACTIVE=1`:
+
+- the first question ends the command at once, naming it, without
+  reading stdin -- pass the flags that answer it instead (`--yes`,
+  `--add-hosts`, `--redirect`, ...);
+- sudo runs as `sudo -n`, so an action that would need a password fails
+  immediately instead of waiting on a terminal that is not there, and
+  wor's own "wor needs to run ... with sudo?" question is not asked.
+  `-n` grants nothing; what sudo allows is still sudo's decision.
+
+Two kinds of question behave differently, on purpose:
+
+- **The sudo question** is declined rather than ending the command, so
+  the action fails through its normal error path -- the one that rolls
+  back a vhost or php-fpm pool it had started to change.
+- **Optional follow-ups asked after the work is done** ("Deploy now?"
+  after `wor source clone` / `wor rollback`, the php-fpm restart offer,
+  "create your first website?" at the end of `wor setup`) are skipped,
+  and the command still succeeds.
+
 ## wor create
 
 ```

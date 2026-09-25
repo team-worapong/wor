@@ -275,7 +275,7 @@ func (a *App) setupPHPPool(domain, service, phpVersion string) error {
 		sock := phpfpm.SocketPath(version, domain, service)
 		if socketDeniesUser(sock, listenOwner) {
 			a.warn("pool socket %s is not connectable by the web server user (%s) -- stale socket ownership; php-fpm reload does not re-chown an existing socket", sock, listenOwner)
-			if a.confirmYesDefaultYes(fmt.Sprintf("Restart php-fpm %s now to re-create the socket (briefly interrupts its other pools)?", version.Number)) {
+			if a.offer(fmt.Sprintf("Restart php-fpm %s now to re-create the socket (briefly interrupts its other pools)?", version.Number), true) {
 				if err := phpfpm.Restart(version); err != nil {
 					a.warn("restart failed: %s -- run manually: sudo systemctl restart %s", err, version.ReloadUnit)
 				}

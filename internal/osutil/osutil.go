@@ -25,6 +25,18 @@ func OSName() string {
 	}
 }
 
+// nonInteractive is set once per process by SetNonInteractive.
+var nonInteractive bool
+
+// SetNonInteractive switches privileged commands to a mode for callers
+// that cannot answer anything (cron, WOR HCP): SudoCommand no longer
+// asks its confirm-once question -- the caller already chose to run
+// unattended -- and passes -n, so a sudo that would need a password
+// fails at once instead of waiting on a terminal that is not there.
+// sudo itself stays the authority on what may run: -n grants nothing,
+// it only turns "ask for a password" into "fail".
+func SetNonInteractive(on bool) { nonInteractive = on }
+
 func IsWindows() bool { return runtime.GOOS == "windows" }
 func IsMacOS() bool   { return runtime.GOOS == "darwin" }
 func IsLinux() bool   { return runtime.GOOS == "linux" }

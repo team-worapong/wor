@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"strings"
 
 	"wor/internal/config"
 	"wor/internal/domainmodel"
@@ -36,6 +37,12 @@ type App struct {
 	Err io.Writer
 	In  *bufio.Reader
 
+	// NonInteractive is set by --non-interactive or WOR_NONINTERACTIVE:
+	// every question ends the command instead of waiting for an answer,
+	// and sudo is run with -n. For callers that are programs (cron,
+	// WOR HCP), which cannot answer and must not hang. See prompt.
+	NonInteractive bool
+
 	// previousOperatorUser is the operator account as it was configured
 	// when this process started, before `wor setup` overwrote
 	// Cfg.OperatorUser with whatever the operator answered. It is what
@@ -59,10 +66,47 @@ func New() (*App, error) {
 	// Wire osutil's confirm-once elevation gate to an interactive y/n
 	// prompt, so the first time (per process) a command actually needs
 	// to escalate via sudo, the user sees why before it happens.
-	osutil.SetElevationPrompt(func(reason string) bool {
-		return app.confirmYesDefaultYes(fmt.Sprintf("wor needs to %s", reason))
-	})
+	osutil.SetElevationPrompt(app.answerElevation)
 	return app, nil
+}
+
+// answerElevation is osutil's elevation question. Unlike every other
+// question it never ends the command the way prompt does: it is asked
+// from deep inside privileged operations, where the caller's own error
+// path is what restores what it changed (the vhost snapshot of
+// applyHostParams, the pool rollback of WritePool). So nobody-to-answer
+// has to come back as a declined elevation -- an ordinary error -- not
+// as a jump out of all of it.
+func (a *App) answerElevation(reason string) bool {
+	answer, ok := a.readAnswer(fmt.Sprintf("wor needs to %s [Y/n]: ", reason))
+	if !ok {
+		fmt.Fprintln(a.Err, "(no answer -- elevation declined)")
+		return false
+	}
+	answer = strings.ToLower(answer)
+	return answer == "" || answer == "y" || answer == "yes"
+}
+
+// takeNonInteractive removes every --non-interactive from args and
+// reports whether it was there, or WOR_NONINTERACTIVE is set. Removed
+// rather than left for the subcommand, because the switch is global:
+// `wor create` rejects any flag at all, and positional parsing
+// elsewhere should never have to know about it.
+func takeNonInteractive(args []string) ([]string, bool) {
+	kept := make([]string, 0, len(args))
+	found := false
+	for _, arg := range args {
+		if arg == "--non-interactive" {
+			found = true
+			continue
+		}
+		kept = append(kept, arg)
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WOR_NONINTERACTIVE"))) {
+	case "1", "true", "yes":
+		found = true
+	}
+	return kept, found
 }
 
 // Provider builds the active host provider (nginx or apache) per the
@@ -86,7 +130,12 @@ func (a *App) errf(format string, args ...interface{}) error {
 
 // Run dispatches argv (excluding argv[0]) to the matching subcommand,
 // mirroring bin/wor dispatch_command(). It returns a process exit code.
-func (a *App) Run(args []string) int {
+func (a *App) Run(args []string) (exitCode int) {
+	args, nonInteractive := takeNonInteractive(args)
+	if nonInteractive {
+		a.NonInteractive = true
+		osutil.SetNonInteractive(true)
+	}
 	if len(args) == 0 {
 		a.usage()
 		return 1
@@ -98,6 +147,25 @@ func (a *App) Run(args []string) int {
 	// put its failure on stdout as the one JSON document a --json caller
 	// is entitled to parse.
 	jsonMode := parseFlags(rest).Has("json")
+
+	// A question nobody could answer ends the command here (see
+	// promptAbort). Registered before the lock is taken, so the lock's
+	// deferred release still runs first.
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		abort, ok := r.(promptAbort)
+		if !ok {
+			panic(r)
+		}
+		if jsonMode {
+			a.writeJSONError(abort.reason)
+		}
+		fmt.Fprintf(a.Err, "ERROR: %s\n", abort.reason)
+		exitCode = 1
+	}()
 	if jsonMode && !supportsJSON(cmd, rest) {
 		// jsonMode, not false: the invariant a reader relies on is that
 		// --json puts exactly one JSON document on stdout, and asking

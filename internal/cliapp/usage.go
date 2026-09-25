@@ -143,6 +143,12 @@ Usage:
       ERROR line still goes to stderr. A run that fails prints
       {"schema":1,"error":"..."} instead of its report, so stdout always
       holds exactly one document. See docs/commands.md.)
+  --non-interactive   (or WOR_NONINTERACTIVE=1)
+      (accepted by every command. For a caller that is a program: any
+      question ends the command with an ERROR naming it, instead of
+      waiting, and sudo runs with -n so a password prompt fails at once.
+      Without it, a question that reaches the end of stdin is cancelled
+      the same way -- it is never answered with its default.)
   wor diagnose <host|domain/service>
       (read-only root-cause analysis for ONE down/misbehaving service:
       checks config, dns, web server, ssl expiry, process state, port,
